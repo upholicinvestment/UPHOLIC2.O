@@ -1,0 +1,11 @@
+{
+  "scan_interval_sec": 60,
+  "zone_width_pct": 0.5,
+  "swing_window": 5,
+  "min_touches": 3,
+  "breakout_confirm_pct": 0.1,
+  "volume_confirmation": false,
+  "alert_cooldown_min": 30,
+  "market_open": "09:15",
+  "market_close": "15:30"
+}

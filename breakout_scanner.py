@@ -460,7 +460,7 @@ def scan_latest_candles():
             evaluate_breakout_breakdown(symbol, tf_name, latest_candle, prev_candles, df_existing)
 
 def main():
-    global last_processed_ts
+    global last_processed_ts, config
     print("[START] Starting Multi-Timeframe Breakout Scanner...")
     build_all_zones()
     
@@ -478,6 +478,14 @@ def main():
     
     while True:
         try:
+            # Dynamically reload config so changes take effect without restart
+            if os.path.exists(CONFIG_PATH):
+                try:
+                    with open(CONFIG_PATH, "r") as f:
+                        config = json.load(f)
+                except Exception:
+                    pass
+            
             if is_market_open():
                 scan_latest_candles()
             else:

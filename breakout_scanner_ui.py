@@ -7,6 +7,9 @@ import plotly.express as px
 import os
 from datetime import datetime, timedelta
 from streamlit_autorefresh import st_autorefresh
+from dotenv import load_dotenv
+
+load_dotenv()  # Load MONGO_URI, MONGO_DB etc. from .env
 
 st.set_page_config(
     page_title="Upholic | IV4 Leaderboard",
@@ -367,11 +370,12 @@ button[data-baseweb="tab"][aria-selected="true"] {
 # ─── DB Helper ────────────────────────────────────────────────────────────────
 @st.cache_resource
 def get_db():
-    uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/UPHOLIC2_O")
-    return pymongo.MongoClient(uri).get_default_database()
+    uri = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+    db_name = os.getenv("MONGO_DB", "UPHOLIC2_O")
+    return pymongo.MongoClient(uri)[db_name]
 
 
-@st.cache_data(ttl=900)
+@st.cache_data(ttl=30)
 def load_data():
     try:
         col = get_db()["latest_snapshot"]
@@ -412,7 +416,7 @@ def load_data():
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=900)
+@st.cache_data(ttl=30)
 def load_stock_history(symbol):
     try:
         col = get_db()["snapshots"]
@@ -441,7 +445,7 @@ def load_stock_history(symbol):
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=900)
+@st.cache_data(ttl=30)
 def load_all_stocks_history_today():
     try:
         col = get_db()["snapshots"]
@@ -651,7 +655,7 @@ def parse_db_options_df(doc):
     return pd.DataFrame(rows)
 
 
-@st.cache_data(ttl=900)
+@st.cache_data(ttl=30)
 def load_breakout_signals():
     try:
         col = get_db()["latest_snapshot"]

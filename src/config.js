@@ -22,9 +22,7 @@ function extractClientIdFromToken(token) {
 
 const config = {
   tokens: [
-    process.env.DHAN_TOKEN_1,
-    process.env.DHAN_TOKEN_2,
-    process.env.DHAN_TOKEN_3,
+    process.env.DHAN_TOKEN,
   ].filter(Boolean),
 
   optionChainUrl: process.env.DHAN_OPTION_CHAIN_URL || 'https://api.dhan.co/v2/optionchain',
@@ -48,9 +46,8 @@ const config = {
   dividendYield: parseFloat(process.env.DIVIDEND_YIELD || '0'),
 };
 
-// Validate tokens
 if (config.tokens.length === 0) {
-  throw new Error('At least one DHAN_TOKEN must be specified in the environment.');
+  throw new Error('DHAN_TOKEN must be specified in the environment.');
 }
 
 // Auto-extract client-id if not provided explicitly
@@ -63,8 +60,22 @@ if (!config.clientId) {
   }
 }
 
-if (config.marketExpiryDate) {
-  console.log(`[Config] Using manual expiry date override: ${config.marketExpiryDate}`);
+// Validate MARKET_EXPIRY_DATE — required, must be a valid future date
+if (!config.marketExpiryDate) {
+  throw new Error(
+    '[Config] MARKET_EXPIRY_DATE is required. Set it in .env (e.g. MARKET_EXPIRY_DATE=2026-08-28).'
+  );
 }
+
+// Check if the provided expiry date has already passed (compare date-only in IST)
+const expiryMs = new Date(config.marketExpiryDate + 'T15:30:00+05:30').getTime();
+if (Date.now() > expiryMs) {
+  throw new Error(
+    `[Config] MARKET_EXPIRY_DATE "${config.marketExpiryDate}" has already expired. ` +
+    `Please update it in .env to the next expiry date.`
+  );
+}
+
+console.log(`[Config] Using expiry date from env: ${config.marketExpiryDate}`);
 
 export default config;

@@ -1,43 +1,39 @@
 /**
- * Staggers calls across N Dhan access tokens so that:
- *   - Each individual token is never used more than once per rateLimitSeconds (e.g. 3s).
- *   - The overall effective throughput is N requests per rateLimitSeconds (e.g. ~1 request/sec for 3 tokens).
+ * GlobalRateLimiter — enforces a minimum wall-clock gap between ANY two requests.
+ *
+ * All Dhan tokens used here share the same account (dhanClientId), so Dhan
+ * rate-limits per account, NOT per token. Rotating tokens provides zero benefit.
+ * This limiter uses one primary token and enforces a single global delay so no
+ * two requests ever fire closer together than minGapMs milliseconds.
+ *
+ * With DHAN_RATE_LIMIT_SECONDS=1.1 → max ~54 req/min, well under Dhan's limit.
+ * 208 symbols × 1.1s = ~229s per cycle (~3.8 minutes).
  */
 export class TokenRateLimiter {
-  constructor(tokens, rateLimitSeconds = 3.0) {
+  constructor(tokens, rateLimitSeconds = 1.1) {
     if (!tokens || tokens.length === 0) {
       throw new Error('TokenRateLimiter requires at least one token.');
     }
-    this.tokens = tokens;
-    this.minIntervalMs = rateLimitSeconds * 1000;
-    
-    // Track the last time (timestamp in ms) each token was used
-    this.lastUsed = {};
-    for (const token of tokens) {
-      this.lastUsed[token] = 0;
-    }
-    
-    this.nextTokenIndex = 0;
+    // Use only the first token — all tokens share the same account rate limit
+    this.token = tokens[0];
+    this.minGapMs = rateLimitSeconds * 1000;
+    this.lastRequestAt = 0; // epoch → first request fires immediately
   }
 
   /**
-   * Blocks (via Promise/setTimeout) until the next token is legally usable,
-   * then updates its timestamp and returns it.
+   * Waits until minGapMs has elapsed since the last request, then returns the token.
    */
   async acquire() {
-    const token = this.tokens[this.nextTokenIndex];
-    // Rotate to the next token index for the next call
-    this.nextTokenIndex = (this.nextTokenIndex + 1) % this.tokens.length;
-
     const now = Date.now();
-    const elapsed = now - this.lastUsed[token];
-    const waitTime = this.minIntervalMs - elapsed;
+    const elapsed = now - this.lastRequestAt;
+    const wait = this.minGapMs - elapsed;
 
-    if (waitTime > 0) {
-      await new Promise((resolve) => setTimeout(resolve, waitTime));
+    if (wait > 0) {
+      await new Promise((resolve) => setTimeout(resolve, wait));
     }
 
-    this.lastUsed[token] = Date.now();
-    return token;
+    this.lastRequestAt = Date.now();
+    return this.token;
   }
 }
+

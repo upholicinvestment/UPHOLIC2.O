@@ -97,10 +97,14 @@ export async function writeSnapshot(snapshotDoc) {
   // 1. Insert into history time-series collection
   await database.collection('snapshots').insertOne(snapshotDoc);
 
-  // 2. Upsert into latest_snapshot collection
+  // 2. Upsert into latest_snapshot collection.
+  // IMPORTANT: After insertOne(), MongoDB mutates snapshotDoc in-place by adding an _id field.
+  // We must NEVER include _id in a $set operation — MongoDB rejects it as immutable.
+  // Destructuring is the safest way to exclude it without mutating the original object.
+  const { _id, ...snapshotWithoutId } = snapshotDoc;
   await database.collection('latest_snapshot').updateOne(
     { symbol },
-    { $set: snapshotDoc },
+    { $set: snapshotWithoutId },
     { upsert: true }
   );
 

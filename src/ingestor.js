@@ -1,12 +1,8 @@
 import fs from 'fs/promises';
 import axios from 'axios';
 import config from './config.js';
-import { TokenRateLimiter } from './limiter.js';
 import { writeSnapshot, getPreviousSnapshot, insertAlert } from './db.js';
 
-// In-memory cache for contract expiry dates to optimize throughput
-// Key: symbol, Value: { date: 'YYYY-MM-DD', fetchedAt: timestamp }
-const expiryCache = {};
 
 export function checkMarketOpen() {
   const now = new Date();
@@ -312,46 +308,34 @@ function computeIv4FromStrikeChain(opts) {
 
 /* ==================== Core Ingestion Helpers ==================== */
 
-async function getExpiryDate(symbolObj, token) {
-  if (config.marketExpiryDate) {
-    return config.marketExpiryDate;
+/**
+ * Wraps axios.post with automatic retry on HTTP 429 (Too Many Requests).
+ * Retries up to maxRetries times with exponential backoff starting at baseDelayMs.
+ */
+async function axiosWithRetry(url, payload, options, maxRetries = 3, baseDelayMs = 2000) {
+  let lastError;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await axios.post(url, payload, options);
+    } catch (err) {
+      lastError = err;
+      const status = err?.response?.status;
+      if (status === 429 && attempt < maxRetries) {
+        const delay = baseDelayMs * Math.pow(2, attempt); // 2s, 4s, 8s
+        console.warn(`[Ingestor] 429 rate limit hit. Retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      throw err;
+    }
   }
-  const symbol = symbolObj.symbol;
-  const cacheEntry = expiryCache[symbol];
-  
-  // Cache expiry dates for 12 hours
-  const cacheTTL = 12 * 60 * 60 * 1000; 
-  if (cacheEntry && (Date.now() - cacheEntry.fetchedAt < cacheTTL)) {
-    return cacheEntry.date;
-  }
-  
-  // Cache miss or expired: fetch it
-  const payload = {
-    UnderlyingScrip: parseInt(symbolObj.security_id, 10),
-    UnderlyingSeg: symbolObj.exchange_segment
-  };
-  
-  const headers = {
-    'access-token': token,
-    'client-id': config.clientId,
-    'Content-Type': 'application/json'
-  };
-  
-  const response = await axios.post(config.expiryListUrl, payload, {
-    headers,
-    timeout: 10000
-  });
-  
-  if (response.data && response.data.status === 'success' && Array.isArray(response.data.data) && response.data.data.length > 0) {
-    const nearestExpiry = response.data.data[0];
-    expiryCache[symbol] = {
-      date: nearestExpiry,
-      fetchedAt: Date.now()
-    };
-    return nearestExpiry;
-  }
-  
-  throw new Error(`Failed to fetch expiry list: ${JSON.stringify(response.data)}`);
+  throw lastError;
+}
+
+function getExpiryDate() {
+  // Expiry date is always sourced from MARKET_EXPIRY_DATE in .env.
+  // config.js validates at startup that it is set and not expired.
+  return config.marketExpiryDate;
 }
 
 async function fetchOptionChain(symbolObj, expiryDate, token) {
@@ -367,7 +351,7 @@ async function fetchOptionChain(symbolObj, expiryDate, token) {
     'Content-Type': 'application/json'
   };
   
-  const response = await axios.post(config.optionChainUrl, payload, {
+  const response = await axiosWithRetry(config.optionChainUrl, payload, {
     headers,
     timeout: 10000
   });
@@ -403,7 +387,10 @@ function parseLegData(strike, side, leg, prevIvMap) {
 
 function mapResponseToDocument(symbolObj, data, previousSnapshot, expiryDate, now) {
   const spot_price = data.last_price || 0;
-  const strikes = data.strikes || [];
+  // Dhan API returns the option chain under the key "oc", as an object keyed by
+  // strike price strings (e.g. "210.000000": { ce: {...}, pe: {...} }).
+  // NOT under "strikes" and NOT as an array.
+  const oc = data.oc || {};
   const options = [];
 
   const tsIst = getTsIstString(now);
@@ -430,9 +417,9 @@ function mapResponseToDocument(symbolObj, data, previousSnapshot, expiryDate, no
   }
   const oldIv4 = previousSnapshot ? Number(previousSnapshot.iv4 || 0) : 0;
 
-  // Format flat list of options legs while computing previous variables
-  for (const strikeData of strikes) {
-    const strike = strikeData.strike;
+  // Parse the oc object: each key is a strike price string, value is { ce, pe }
+  for (const [strikeStr, strikeData] of Object.entries(oc)) {
+    const strike = parseFloat(strikeStr); // e.g. "210.000000" → 210
     if (!strike) continue;
 
     if (strikeData.ce) {
@@ -441,7 +428,7 @@ function mapResponseToDocument(symbolObj, data, previousSnapshot, expiryDate, no
         type: 'CE',
         ltp: strikeData.ce.last_price || 0,
         oi: strikeData.ce.oi || 0,
-        iv: strikeData.ce.greeks?.implied_volatility || 0,
+        iv: strikeData.ce.implied_volatility || 0,
         volume: strikeData.ce.volume || 0,
         greeks: {
           gamma: strikeData.ce.greeks?.gamma || 0,
@@ -461,7 +448,7 @@ function mapResponseToDocument(symbolObj, data, previousSnapshot, expiryDate, no
         type: 'PE',
         ltp: strikeData.pe.last_price || 0,
         oi: strikeData.pe.oi || 0,
-        iv: strikeData.pe.greeks?.implied_volatility || 0,
+        iv: strikeData.pe.implied_volatility || 0,
         volume: strikeData.pe.volume || 0,
         greeks: {
           gamma: strikeData.pe.greeks?.gamma || 0,
@@ -586,7 +573,12 @@ function mapResponseToDocument(symbolObj, data, previousSnapshot, expiryDate, no
 }
 
 export async function startIngestionLoop() {
-  const limiter = new TokenRateLimiter(config.tokens, config.rateLimitSeconds);
+  // Dhan API rate limit: 1 request per rateLimitSeconds.
+  // We enforce this with a simple nextRequestAt wall-clock check rather than a
+  // limiter class, so there is no abstraction layer that can silently fail.
+  const rateLimitMs = Math.round(config.rateLimitSeconds * 1000);
+  const token = config.tokens[0]; // single account — only one token needed
+  console.log(`[Ingestor] Rate limit: 1 request every ${rateLimitMs}ms (${config.rateLimitSeconds}s).`);
   
   // Load symbols from JSON file
   const symbolsPath = new URL('../symbols.json', import.meta.url);
@@ -629,26 +621,29 @@ export async function startIngestionLoop() {
       let successCount = 0;
       let failCount = 0;
       
+      // nextRequestAt tracks when the next API call is allowed.
+      // It is set BEFORE each call so we guarantee ≥ rateLimitMs between request STARTS.
+      let nextRequestAt = 0;
+      
       for (const symbolObj of symbols) {
         global.ingestionStatus.currentSymbol = symbolObj.symbol;
         global.ingestionStatus.lastActive = new Date().toISOString();
-        
-        // Acquire token (respects Dhan's rate limit cooldown)
-        const token = await limiter.acquire();
+
+        // Enforce rate limit: wait until nextRequestAt before firing the API call
+        const waitMs = nextRequestAt - Date.now();
+        if (waitMs > 0) {
+          await new Promise(resolve => setTimeout(resolve, waitMs));
+        }
+        // Schedule next request BEFORE the call so network/DB time doesn't eat into the gap
+        nextRequestAt = Date.now() + rateLimitMs;
         
         try {
-          // 1. Get expiry date (cached or API-fetched)
-          const expiryDate = await getExpiryDate(symbolObj, token);
-          if (!expiryDate) {
-            throw new Error('No expiry dates returned by Dhan API');
-          }
+          // 1. Get expiry date from env (MARKET_EXPIRY_DATE) — validated at startup
+          const expiryDate = getExpiryDate();
           
           // 2. Fetch Option Chain
           const rawResponse = await fetchOptionChain(symbolObj, expiryDate, token);
           if (!rawResponse || rawResponse.status !== 'success' || !rawResponse.data) {
-            // Invalidate cached expiry date to recover if it was an expiry mismatch error
-            delete expiryCache[symbolObj.symbol];
-            
             const apiError = rawResponse?.data?.['808'] || rawResponse?.data?.['810'] || rawResponse?.remarks || 'API failure';
             throw new Error(`Dhan API Error: ${apiError}`);
           }
@@ -723,8 +718,6 @@ export async function startIngestionLoop() {
           }
         } catch (err) {
           failCount++;
-          // Invalidate cache on errors to trigger fresh resolution in the next cycle
-          delete expiryCache[symbolObj.symbol];
           
           console.error(JSON.stringify({
             level: 'ERROR',
