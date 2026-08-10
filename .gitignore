@@ -1,6 +1,6 @@
 # Environment variables & secrets (CRITICAL)
-
-
+.env
+.env.local
 
 # Node.js dependencies
 node_modules/
