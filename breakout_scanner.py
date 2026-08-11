@@ -7,6 +7,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Load environment variables
 load_dotenv()
@@ -44,6 +46,21 @@ try:
 except Exception as e:
     print(f"[ERROR] Failed to connect to MongoDB: {e}")
     sys.exit(1)
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"status": "UP"}')
+    def log_message(self, format, *args):
+        pass # Suppress logging to keep console clean
+
+def start_health_server():
+    port = int(os.getenv("PORT", "8000"))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    print(f"[HEALTH] HTTP server running on port {port} for Render health checks.")
+    server.serve_forever()
 
 # Mapping timeframes to pandas frequencies: (pandas frequency, mode)
 TIMEFRAME_MAP = {
@@ -462,6 +479,11 @@ def scan_latest_candles():
 def main():
     global last_processed_ts, config
     print("[START] Starting Multi-Timeframe Breakout Scanner...")
+    
+    # Start health check server for Render compatibility
+    health_thread = threading.Thread(target=start_health_server, daemon=True)
+    health_thread.start()
+    
     build_all_zones()
     
     if last_processed_ts is not None:
