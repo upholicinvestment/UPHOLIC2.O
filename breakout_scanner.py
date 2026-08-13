@@ -324,6 +324,128 @@ def check_v2_pattern(symbol, tf_name, df, direction, close, open_val, mode):
                     except Exception as ex:
                         print(f"[WARN] Failed to insert V2 alert: {ex}")
 
+def get_daily_pct_change(symbol, current_close):
+    try:
+        if symbol in latest_data and "1 Day" in latest_data[symbol]:
+            df_daily = latest_data[symbol]["1 Day"]
+            if not df_daily.empty:
+                last_idx = df_daily.index[-1]
+                now_ist = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=5.5)
+                last_date = last_idx.date()
+                today_date = now_ist.date()
+                
+                if last_date == today_date:
+                    if len(df_daily) >= 2:
+                        prev_close = df_daily.iloc[-2]['close']
+                    else:
+                        return None
+                else:
+                    prev_close = df_daily.iloc[-1]['close']
+                
+                if prev_close > 0:
+                    return (current_close - prev_close) / prev_close * 100
+    except Exception as e:
+        print(f"[WARN] Error calculating daily percentage change for {symbol}: {e}")
+    return None
+
+def check_w_m_patterns(symbol, tf_name, df, close, open_val, mode):
+    # Extract chronological list of swing points from this resampled timeframe
+    swings = []
+    for idx, row in df.iterrows():
+        if row['swing_high']:
+            swings.append({'type': 'high', 'price': row['high'], 'time': idx})
+        if row['swing_low']:
+            swings.append({'type': 'low', 'price': row['low'], 'time': idx})
+            
+    if len(swings) < 3:
+        return
+        
+    # Get last 3 swing points (oldest to newest: p3 -> p2 -> p1)
+    p3, p2, p1 = swings[-3], swings[-2], swings[-1]
+    
+    # breakout confirmation percentage
+    confirm_pct = config.get("breakout_confirm_pct", 0.1)
+    
+    # 1. Check W Pattern (Double Bottom Breakout)
+    # Sequence: Low (S1) -> High (R1/Neckline) -> Low (S2)
+    if p3['type'] == 'low' and p2['type'] == 'high' and p1['type'] == 'low':
+        s1, r1, s2 = p3['price'], p2['price'], p1['price']
+        
+        # Double bottom condition (S1 and S2 within 2%)
+        is_double_bottom = abs(s1 - s2) / max(s1, s2) <= 0.02
+        
+        if is_double_bottom:
+            # Breakout condition: Close broke above R1 (neckline)
+            breakout_threshold = r1 * (1 + confirm_pct / 100)
+            if close >= breakout_threshold and open_val <= r1:
+                cooldown_key = f"{symbol}_{tf_name}_W_PATTERN"
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
+                if cooldown_key in alert_cooldowns and now - alert_cooldowns[cooldown_key] < timedelta(minutes=config["alert_cooldown_min"]):
+                    return
+                
+                # Check daily filter (same as regular breakouts - must be up 2%)
+                daily_change = get_daily_pct_change(symbol, close)
+                if daily_change is not None and daily_change < 2.0:
+                    return
+                    
+                alert_cooldowns[cooldown_key] = now
+                strength = "Strong" if abs(s1 - s2) / s1 <= 0.01 else "Medium"
+                print(f"[W-PATTERN] {symbol} ({tf_name}) Double Bottom Breakout above {r1:.2f} at Close={close:.2f}")
+                
+                try:
+                    db["v1_scanner_alerts"].insert_one({
+                      "timestamp": now,
+                      "ts_ist": get_ts_ist_string(now),
+                      "symbol": symbol,
+                      "timeframe": tf_name,
+                      "direction": "BULLISH",
+                      "mode": mode,
+                      "spot": float(close),
+                      "details": f"W Pattern Breakout: Neckline: {r1:.2f} | Support: {s1:.2f}-{s2:.2f} (Diff: {(abs(s1-s2)/s1*100):.2f}%) | Close: {close:.2f} | Strength: {strength}"
+                    })
+                except Exception as ex:
+                    print(f"[WARN] Failed to insert W pattern alert: {ex}")
+
+    # 2. Check M Pattern (Double Top Breakdown)
+    # Sequence: High (R1) -> Low (S1/Neckline) -> High (R2)
+    elif p3['type'] == 'high' and p2['type'] == 'low' and p1['type'] == 'high':
+        r1, s1, r2 = p3['price'], p2['price'], p1['price']
+        
+        # Double top condition (R1 and R2 within 2%)
+        is_double_top = abs(r1 - r2) / max(r1, r2) <= 0.02
+        
+        if is_double_top:
+            # Breakdown condition: Close broke below S1 (neckline)
+            breakdown_threshold = s1 * (1 - confirm_pct / 100)
+            if close <= breakdown_threshold and open_val >= s1:
+                cooldown_key = f"{symbol}_{tf_name}_M_PATTERN"
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
+                if cooldown_key in alert_cooldowns and now - alert_cooldowns[cooldown_key] < timedelta(minutes=config["alert_cooldown_min"]):
+                    return
+                    
+                # Check daily filter (same as regular breakdowns - must be down 2%)
+                daily_change = get_daily_pct_change(symbol, close)
+                if daily_change is not None and daily_change > -2.0:
+                    return
+                    
+                alert_cooldowns[cooldown_key] = now
+                strength = "Strong" if abs(r1 - r2) / r1 <= 0.01 else "Medium"
+                print(f"[M-PATTERN] {symbol} ({tf_name}) Double Top Breakdown below {s1:.2f} at Close={close:.2f}")
+                
+                try:
+                    db["v1_scanner_alerts"].insert_one({
+                      "timestamp": now,
+                      "ts_ist": get_ts_ist_string(now),
+                      "symbol": symbol,
+                      "timeframe": tf_name,
+                      "direction": "BEARISH",
+                      "mode": mode,
+                      "spot": float(close),
+                      "details": f"M Pattern Breakdown: Neckline: {s1:.2f} | Resistance: {r1:.2f}-{r2:.2f} (Diff: {(abs(r1-r2)/r1*100):.2f}%) | Close: {close:.2f} | Strength: {strength}"
+                    })
+                except Exception as ex:
+                    print(f"[WARN] Failed to insert M pattern alert: {ex}")
+
 def evaluate_breakout_breakdown(symbol, tf_name, latest_candle, prev_candles, df_all):
     close = latest_candle['close']
     open_val = latest_candle['open']
@@ -348,6 +470,11 @@ def evaluate_breakout_breakdown(symbol, tf_name, latest_candle, prev_candles, df
         breakout_threshold = zone_max * (1 + config["breakout_confirm_pct"] / 100)
         
         if close >= breakout_threshold and open_val <= zone_max:
+            # Check 2% daily gain filter
+            daily_change = get_daily_pct_change(symbol, close)
+            if daily_change is not None and daily_change < 2.0:
+                continue
+                
             cooldown_key = f"{symbol}_{tf_name}_BULLISH"
             now = datetime.now(timezone.utc).replace(tzinfo=None)
             if cooldown_key in alert_cooldowns and now - alert_cooldowns[cooldown_key] < timedelta(minutes=config["alert_cooldown_min"]):
@@ -389,6 +516,11 @@ def evaluate_breakout_breakdown(symbol, tf_name, latest_candle, prev_candles, df
         breakdown_threshold = zone_min * (1 - config["breakout_confirm_pct"] / 100)
         
         if close <= breakdown_threshold and open_val >= zone_min:
+            # Check 2% daily loss filter
+            daily_change = get_daily_pct_change(symbol, close)
+            if daily_change is not None and daily_change > -2.0:
+                continue
+                
             cooldown_key = f"{symbol}_{tf_name}_BEARISH"
             now = datetime.now(timezone.utc).replace(tzinfo=None)
             if cooldown_key in alert_cooldowns and now - alert_cooldowns[cooldown_key] < timedelta(minutes=config["alert_cooldown_min"]):
@@ -421,6 +553,9 @@ def evaluate_breakout_breakdown(symbol, tf_name, latest_candle, prev_candles, df
                                 check_v2_pattern(symbol, v2_tf, v2_df, "BEARISH", v2_latest['close'], v2_latest['open'], v2_info[1])
                 except Exception as ex:
                     print(f"[WARN] Failed to insert alert: {ex}")
+                    
+    # 3. Check W and M Patterns
+    check_w_m_patterns(symbol, tf_name, df_all, close, open_val, mode)
 
 def scan_latest_candles():
     global last_processed_ts

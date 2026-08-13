@@ -755,17 +755,137 @@ st.html(f"""
 </div>
 """)
 
-# Reusable alerts table renderer
-def render_alerts_table(alerts_list, empty_message):
-    if not alerts_list:
-        st.info(empty_message)
-        return
+@st.cache_data(ttl=300)
+def get_earliest_alert_date(collection_name="v1_scanner_alerts"):
+    """Return the earliest date (as date object) that has alerts in the collection."""
+    try:
+        col = get_db()[collection_name]
+        # Find the document with the smallest timestamp
+        doc = col.find_one({}, {"ts_ist": 1}, sort=[("timestamp", 1)])
+        if not doc:
+            return datetime.now().date()
+        ts = doc.get("ts_ist", "")
+        date_part = ts.split(" ")[0]  # "YYYY-MM-DD"
+        return datetime.strptime(date_part, "%Y-%m-%d").date()
+    except Exception:
+        return datetime.now().date()
+
+
+def render_alert_action_bar(collection_name, mode_filter, table_key, live_log_key, toast_state_key):
+    """Render a tab-specific action bar for clearing and downloading alerts."""
+    today_date = datetime.now().date()
+    act_col1, act_col2, act_col3 = st.columns([2, 2, 4])
+    
+    with act_col1:
+        has_alerts_today = any(a.get("mode", "INTRADAY") == mode_filter for a in st.session_state.get(live_log_key, []))
+        if has_alerts_today:
+            if st.button(f"🗑️ Clear {mode_filter.title()} Alerts", key=f"clear_{table_key}"):
+                try:
+                    col = get_db()[collection_name]
+                    col.delete_many({
+                        "ts_ist": { "$regex": f"^{today_date.strftime('%Y-%m-%d')}" },
+                        "mode": mode_filter
+                    })
+                except Exception as e:
+                    st.error(f"Error clearing alerts: {e}")
+                # Remove matching items from live log
+                st.session_state[live_log_key] = [
+                    a for a in st.session_state[live_log_key]
+                    if a.get("mode", "INTRADAY") != mode_filter
+                ]
+                st.session_state[toast_state_key].clear()
+                st.rerun()
+
+    with act_col2:
+        st.markdown(f"**📥 Download {mode_filter.title()} CSV**")
         
+    with act_col3:
+        dl_col1, dl_col2, dl_col3 = st.columns([1, 1, 1])
+        with dl_col1:
+            dl_start = st.date_input("From Date", value=today_date, key=f"dl_start_{table_key}", label_visibility="collapsed")
+        with dl_col2:
+            dl_end = st.date_input("To Date", value=today_date, key=f"dl_end_{table_key}", label_visibility="collapsed")
+        with dl_col3:
+            if st.button("⬇️ Download CSV", key=f"dl_btn_{table_key}"):
+                all_dl_alerts = []
+                cur_date = dl_start
+                while cur_date <= dl_end:
+                    date_str = cur_date.strftime("%Y-%m-%d")
+                    day_alerts = load_alerts_by_date(date_str, collection_name)
+                    filtered_alerts = [a for a in day_alerts if a.get("mode", "INTRADAY") == mode_filter]
+                    all_dl_alerts.extend(filtered_alerts)
+                    cur_date += timedelta(days=1)
+                
+                if all_dl_alerts:
+                    dl_df = pd.DataFrame(all_dl_alerts)[["timestamp", "symbol", "timeframe", "direction", "spot", "details", "mode"]]
+                    dl_df.columns = ["Alert Time", "Symbol", "Timeframe", "Direction", "Spot Price", "Trigger Details", "Mode"]
+                    csv_data = dl_df.to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        label=f"✅ Save {len(all_dl_alerts)} rows",
+                        data=csv_data,
+                        file_name=f"{mode_filter.lower()}_alerts_{dl_start}_to_{dl_end}.csv",
+                        mime="text/csv",
+                        key=f"dl_save_{table_key}"
+                    )
+                else:
+                    st.warning(f"No {mode_filter.lower()} alerts found for selected range.")
+
+
+# Reusable alerts table renderer with built-in < > day navigation
+def render_alerts_table(alerts_list, empty_message, table_key="default", collection_name="v1_scanner_alerts", mode_filter="INTRADAY"):
+    today_d = datetime.now().date()
+
+    # Init per-table navigation date in session state
+    nav_key = f"nav_date_{table_key}"
+    if nav_key not in st.session_state:
+        st.session_state[nav_key] = today_d  # start on today
+
+    viewing_date = st.session_state[nav_key]
+    is_today = (viewing_date == today_d)
+
+    # ── Compact nav bar: right-aligned < date > ───────────────────────────
+    earliest_d = get_earliest_alert_date(collection_name)
+    nav_left, nav_right = st.columns([6, 3])
+    with nav_right:
+        nb1, nb2, nb3, nb4 = st.columns([1.2, 1.5, 1.2, 0.1])
+        with nb1:
+            at_min = (viewing_date <= earliest_d)
+            if st.button("◀", key=f"prev_{table_key}", help=f"Previous day (oldest: {earliest_d.strftime('%d %b')})", disabled=at_min):
+                st.session_state[nav_key] -= timedelta(days=1)
+                st.rerun()
+        with nb2:
+            lbl = "Today" if is_today else viewing_date.strftime("%d %b %Y")
+            st.markdown(
+                f"<div style='text-align:center;padding:6px 4px;color:#60a5fa;font-weight:700;font-size:0.82rem;white-space:nowrap;'>{lbl}</div>",
+                unsafe_allow_html=True
+            )
+        with nb3:
+            is_disabled = (viewing_date >= today_d)
+            if st.button("▶", key=f"next_{table_key}", help="Next day", disabled=is_disabled):
+                nxt = st.session_state[nav_key] + timedelta(days=1)
+                if nxt <= today_d:
+                    st.session_state[nav_key] = nxt
+                    st.rerun()
+
+    # Decide which data to show
+    if is_today:
+        display_alerts = [a for a in alerts_list if a.get("mode", "INTRADAY") == mode_filter]
+    else:
+        date_str = viewing_date.strftime("%Y-%m-%d")
+        hist = load_alerts_by_date(date_str, collection_name)
+        display_alerts = [a for a in hist if a.get("mode", "INTRADAY") == mode_filter]
+
+    if not display_alerts:
+        st.info(empty_message if is_today else f"No alerts found for {viewing_date.strftime('%d %b %Y')}.")
+        return
+
     rows_alert_html = ""
-    for idx, a in enumerate(alerts_list):
+    for idx, a in enumerate(display_alerts):
         dir_class = "sig-bullish" if a["direction"] == "BULLISH" else "sig-bearish"
+        row_num = idx + 1
         rows_alert_html += f"""
         <tr>
+          <td style="text-align:center;color:#475569;font-size:0.75rem;font-weight:600;width:40px;">{row_num}</td>
           <td>{a['timestamp']}</td>
           <td><b>{a['symbol']}</b></td>
           <td><span style="font-family:'JetBrains Mono';font-size:0.75rem;padding:3px 8px;background:rgba(255,255,255,0.05);border-radius:4px;">{a['timeframe'].upper()}</span></td>
@@ -773,12 +893,13 @@ def render_alerts_table(alerts_list, empty_message):
           <td>₹{a['spot']:,.2f}</td>
           <td style="text-align:left;color:#94a3b8;font-family:'Inter'">{a['details']}</td>
         </tr>"""
-        
+
     table_alert_html = f"""
     <div style="background:#0d1625;border:1px solid rgba(255,255,255,0.06);border-radius:14px;overflow:hidden;overflow-x:auto;">
       <table class="iv4-table">
         <thead>
           <tr>
+            <th style="text-align:center;width:40px;">#</th>
             <th style="text-align:left">Alert Time</th>
             <th style="text-align:left">Symbol</th>
             <th style="text-align:left">Timeframe</th>
@@ -793,10 +914,39 @@ def render_alerts_table(alerts_list, empty_message):
       </table>
     </div>
     <div style="margin-top:10px;color:#334155;font-size:0.71rem;text-align:right">
-      Total alerts in this view: {len(alerts_list)}
+      {len(display_alerts)} alerts &nbsp;·&nbsp; {'Today' if is_today else viewing_date.strftime('%d %b %Y')}
     </div>
     """
     st.html(table_alert_html)
+
+
+@st.cache_data(ttl=60)
+def load_alerts_by_date(date_str, collection_name="v1_scanner_alerts"):
+    """Load alerts from MongoDB for a given date string (YYYY-MM-DD)."""
+    try:
+        col = get_db()[collection_name]
+        cursor = col.find({
+            "ts_ist": { "$regex": f"^{date_str}" }
+        }).sort("timestamp", -1)
+        docs = list(cursor)
+        if not docs:
+            return []
+        alerts = []
+        for d in docs:
+            t_ist = d.get("ts_ist", "")
+            alerts.append({
+                "timestamp": t_ist,
+                "symbol": d.get("symbol", ""),
+                "timeframe": d.get("timeframe", "15m"),
+                "direction": d.get("direction", ""),
+                "spot": d.get("spot", 0.0),
+                "details": d.get("details", ""),
+                "mode": d.get("mode", "INTRADAY")
+            })
+        return alerts
+    except Exception as e:
+        st.error(f"Error loading alerts for {date_str}: {e}")
+        return []
 
 # Create Tabs
 tab1, tab2, tab3, tab4 = st.tabs(["🏆 Volatility Leaderboard", "🎯 Breakout Scanner", "🔔 Live Alerts Log (V1)", "🔥 Early Breakouts (V2)"])
@@ -1281,60 +1431,82 @@ with tab2:
 # ─── TAB 3: Live Alerts Log ───────────────────────────────────────────────────
 with tab3:
     st.html("""<div class="section-label">🔔 Live Breakout Crossing Alerts</div>""")
-    
-    # Clear Log Button
-    if st.session_state["live_alerts_log"]:
-        if st.button("🗑️ Clear Alerts Log"):
-            try:
-                col = get_db()["v1_scanner_alerts"]
-                today_str = datetime.now().strftime("%Y-%m-%d")
-                col.delete_many({ "ts_ist": { "$regex": f"^{today_str}" } })
-            except Exception as e:
-                st.error(f"Error clearing alerts from database: {e}")
-            st.session_state["live_alerts_log"] = []
-            st.session_state["toasted_alerts"].clear()
-            st.rerun()
 
-    # Create sub-tabs
+    # ── Sub-tabs (no yesterday tab) ───────────────────────────────────────────
     subtab1, subtab2 = st.tabs(["🚀 Intraday Breakouts", "📅 Positional Breakouts"])
-    
-    # Filter alerts
-    intraday_alerts = [a for a in st.session_state["live_alerts_log"] if a.get("mode", "INTRADAY") == "INTRADAY"]
-    positional_alerts = [a for a in st.session_state["live_alerts_log"] if a.get("mode", "INTRADAY") == "POSITIONAL"]
-    
+
     with subtab1:
-        render_alerts_table(intraday_alerts, "No intraday breakout alerts triggered yet today. Make sure your background scanner is running during market hours.")
-        
+        render_alert_action_bar(
+            collection_name="v1_scanner_alerts",
+            mode_filter="INTRADAY",
+            table_key="v1_intraday",
+            live_log_key="live_alerts_log",
+            toast_state_key="toasted_alerts"
+        )
+        st.html("<div style='margin-bottom:12px'></div>")
+        render_alerts_table(
+            st.session_state["live_alerts_log"],
+            "No intraday breakout alerts triggered yet today. Make sure your background scanner is running during market hours.",
+            table_key="v1_intraday",
+            collection_name="v1_scanner_alerts",
+            mode_filter="INTRADAY"
+        )
+
     with subtab2:
-        render_alerts_table(positional_alerts, "No positional breakout alerts triggered yet today. Positional alerts are evaluated on daily/weekly candles.")
+        render_alert_action_bar(
+            collection_name="v1_scanner_alerts",
+            mode_filter="POSITIONAL",
+            table_key="v1_positional",
+            live_log_key="live_alerts_log",
+            toast_state_key="toasted_alerts"
+        )
+        st.html("<div style='margin-bottom:12px'></div>")
+        render_alerts_table(
+            st.session_state["live_alerts_log"],
+            "No positional breakout alerts triggered yet today. Positional alerts are evaluated on daily/weekly candles.",
+            table_key="v1_positional",
+            collection_name="v1_scanner_alerts",
+            mode_filter="POSITIONAL"
+        )
 
 
 # ─── TAB 4: Early Breakouts (V2) ──────────────────────────────────────────────
 with tab4:
-    st.html("""<div class="section-label">🔥 Live Early Breakout & Breakdown Alerts (V2)</div>""")
-    
-    # Clear Log Button
-    if st.session_state["live_v2_alerts_log"]:
-        if st.button("🗑️ Clear V2 Alerts Log"):
-            try:
-                col = get_db()["v2_scanner_alerts"]
-                today_str = datetime.now().strftime("%Y-%m-%d")
-                col.delete_many({ "ts_ist": { "$regex": f"^{today_str}" } })
-            except Exception as e:
-                st.error(f"Error clearing V2 alerts from database: {e}")
-            st.session_state["live_v2_alerts_log"] = []
-            st.session_state["toasted_v2_alerts"].clear()
-            st.rerun()
+    st.html("""<div class="section-label">🔥 Live Early Breakout &amp; Breakdown Alerts (V2)</div>""")
 
-    # Create sub-tabs
+    # ── Sub-tabs (no yesterday tab) ───────────────────────────────────────────
     v2_subtab1, v2_subtab2 = st.tabs(["🚀 Intraday Breakouts", "📅 Positional Breakouts"])
-    
-    # Filter alerts
-    intraday_v2 = [a for a in st.session_state["live_v2_alerts_log"] if a.get("mode", "INTRADAY") == "INTRADAY"]
-    positional_v2 = [a for a in st.session_state["live_v2_alerts_log"] if a.get("mode", "INTRADAY") == "POSITIONAL"]
 
     with v2_subtab1:
-        render_alerts_table(intraday_v2, "No early intraday breakout alerts triggered yet today. Make sure your background scanner is running during market hours.")
-        
+        render_alert_action_bar(
+            collection_name="v2_scanner_alerts",
+            mode_filter="INTRADAY",
+            table_key="v2_intraday",
+            live_log_key="live_v2_alerts_log",
+            toast_state_key="toasted_v2_alerts"
+        )
+        st.html("<div style='margin-bottom:12px'></div>")
+        render_alerts_table(
+            st.session_state["live_v2_alerts_log"],
+            "No early intraday breakout alerts triggered yet today. Make sure your background scanner is running during market hours.",
+            table_key="v2_intraday",
+            collection_name="v2_scanner_alerts",
+            mode_filter="INTRADAY"
+        )
+
     with v2_subtab2:
-        render_alerts_table(positional_v2, "No early positional breakout alerts triggered yet today. Positional alerts are evaluated on daily/weekly candles.")
+        render_alert_action_bar(
+            collection_name="v2_scanner_alerts",
+            mode_filter="POSITIONAL",
+            table_key="v2_positional",
+            live_log_key="live_v2_alerts_log",
+            toast_state_key="toasted_v2_alerts"
+        )
+        st.html("<div style='margin-bottom:12px'></div>")
+        render_alerts_table(
+            st.session_state["live_v2_alerts_log"],
+            "No early positional breakout alerts triggered yet today. Positional alerts are evaluated on daily/weekly candles.",
+            table_key="v2_positional",
+            collection_name="v2_scanner_alerts",
+            mode_filter="POSITIONAL"
+        )

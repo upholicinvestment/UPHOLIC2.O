@@ -24,6 +24,8 @@ Thumbs.db
 .idea/
 .vscode/
 
-# Local databases & logs
+# Local databases, scratchpad, & generated spreadsheets
 *.log
-scratch/db_backup/
+scratch/
+*.xlsx
+*.csv
