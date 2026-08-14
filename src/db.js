@@ -120,4 +120,111 @@ export async function writeSnapshot(snapshotDoc) {
     volume: 0
   };
   await database.collection('optstk_history_1m').insertOne(candleDoc);
+
+  // 4. If there is a non-zero iv4_change_5m, insert it into the iv4_spikes collection
+  if (snapshotDoc.iv4_change_5m && snapshotDoc.iv4_change_5m !== 0) {
+    await database.collection('iv4_spikes').insertOne(snapshotWithoutId);
+  }
+
+  // 5. If there is a non-neutral edge signal, insert it into the breakoutscanner_alerts collection
+  const edge = calculateIvEdge(snapshotDoc.options, snapshotDoc.spot_price);
+  if (edge.edge_signal !== 'NEUTRAL') {
+    const signalAlert = {
+      symbol: symbol,
+      security_id: snapshotDoc.security_id,
+      spot_price: snapshotDoc.spot_price,
+      expiry: snapshotDoc.expiry,
+      fetched_at: snapshotDoc.fetched_at,
+      ts_ist: snapshotDoc.ts_ist,
+      edge_signal: edge.edge_signal,
+      iv_ratio: Number(edge.iv_ratio.toFixed(3)),
+      iv_skew: Number(edge.iv_skew.toFixed(2)),
+      vw_iv_call: Number(edge.vw_iv_call.toFixed(2)),
+      vw_iv_put: Number(edge.vw_iv_put.toFixed(2)),
+      call_flow_net: Number(edge.call_flow_net.toFixed(2)),
+      put_flow_net: Number(edge.put_flow_net.toFixed(2))
+    };
+    await database.collection('breakoutscanner_alerts').insertOne(signalAlert);
+  }
+}
+
+function calculateIvEdge(options, spot_price, otm_threshold_pct = 1.5) {
+  if (!options || !Array.isArray(options) || options.length === 0 || !spot_price) {
+    return {
+      vw_iv_call: 0,
+      vw_iv_put: 0,
+      iv_ratio: 0,
+      iv_skew: 0,
+      call_flow_net: 0,
+      put_flow_net: 0,
+      edge_signal: 'NEUTRAL'
+    };
+  }
+
+  const otm_call_strike = spot_price * (1 + (otm_threshold_pct / 100));
+  const otm_put_strike = spot_price * (1 - (otm_threshold_pct / 100));
+
+  let call_iv_weighted_sum = 0;
+  let call_volume_sum = 0;
+  let put_iv_weighted_sum = 0;
+  let put_volume_sum = 0;
+
+  let call_flow_momentum = 0;
+  let put_flow_momentum = 0;
+
+  for (const opt of options) {
+    const strike = Number(opt.strike);
+    const type = opt.type;
+    const iv = Number(opt.iv || 0);
+    const volume = Number(opt.volume || 0);
+    const oi = Number(opt.oi || 0);
+    const prev_oi = Number(opt.previous_oi || 0);
+    const last_price = Number(opt.ltp || 0);
+    const prev_close = Number(opt.previous_close_price || 0);
+
+    const oi_change = oi - prev_oi;
+    const premium_change = last_price - prev_close;
+    const net_flow = oi_change * premium_change;
+
+    if (type === 'CE') {
+      if (strike >= otm_call_strike) {
+        call_iv_weighted_sum += iv * volume;
+        call_volume_sum += volume;
+        call_flow_momentum += net_flow;
+      }
+    } else if (type === 'PE') {
+      if (strike <= otm_put_strike) {
+        put_iv_weighted_sum += iv * volume;
+        put_volume_sum += volume;
+        put_flow_momentum += net_flow;
+      }
+    }
+  }
+
+  const vw_iv_call = call_volume_sum > 0 ? (call_iv_weighted_sum / call_volume_sum) : 0;
+  const vw_iv_put = put_volume_sum > 0 ? (put_iv_weighted_sum / put_volume_sum) : 0;
+
+  const iv_ratio = vw_iv_put > 0 ? (vw_iv_call / vw_iv_put) : 0;
+  const iv_skew = vw_iv_put - vw_iv_call;
+
+  let signal = 'NEUTRAL';
+  if (iv_ratio > 1.2 && call_flow_momentum > 0) {
+    signal = 'BULLISH DIVERGENCE (Call IV Expanding + Premium Build)';
+  } else if (iv_ratio < 0.8 && put_flow_momentum > 0) {
+    signal = 'BEARISH DIVERGENCE (Put IV Expanding + Put Premium Build)';
+  } else if (iv_ratio > 1.2 && call_flow_momentum < 0) {
+    signal = 'CALL SHORT-COVERING SQUEEZE (Call IV Expanding + Premium Unwind)';
+  } else if (iv_ratio < 0.8 && put_flow_momentum < 0) {
+    signal = 'PUT SHORT-COVERING (Put IV Expanding + Put Premium Unwind)';
+  }
+
+  return {
+    vw_iv_call,
+    vw_iv_put,
+    iv_ratio,
+    iv_skew,
+    call_flow_net: call_flow_momentum,
+    put_flow_net: put_flow_momentum,
+    edge_signal: signal
+  };
 }

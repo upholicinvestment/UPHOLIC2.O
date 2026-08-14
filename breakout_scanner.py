@@ -248,6 +248,7 @@ def build_all_zones():
     print("[OK] Completed S&R zone building.")
 
 def check_v2_pattern(symbol, tf_name, df, direction, close, open_val, mode):
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     # Extract chronological list of swing points from this resampled timeframe
     swings = []
     for idx, row in df.iterrows():
@@ -280,8 +281,8 @@ def check_v2_pattern(symbol, tf_name, df, direction, close, open_val, mode):
                     strength = "Strong" if abs(s1 - s2) / s1 <= 0.01 else "Medium"
                     try:
                         db["v2_scanner_alerts"].insert_one({
-                          "timestamp": datetime.now(),
-                          "ts_ist": get_ts_ist_string(datetime.now()),
+                          "timestamp": now,
+                          "ts_ist": get_ts_ist_string(now),
                           "symbol": symbol,
                           "timeframe": tf_name,
                           "direction": "BULLISH",
@@ -311,8 +312,8 @@ def check_v2_pattern(symbol, tf_name, df, direction, close, open_val, mode):
                     strength = "Strong" if abs(r1 - r2) / r1 <= 0.01 else "Medium"
                     try:
                         db["v2_scanner_alerts"].insert_one({
-                          "timestamp": datetime.now(),
-                          "ts_ist": get_ts_ist_string(datetime.now()),
+                          "timestamp": now,
+                          "ts_ist": get_ts_ist_string(now),
                           "symbol": symbol,
                           "timeframe": tf_name,
                           "direction": "BEARISH",

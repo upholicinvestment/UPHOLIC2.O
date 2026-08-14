@@ -736,6 +736,273 @@ for a in reversed(db_v2_alerts):
 st.session_state["live_alerts_log"] = db_alerts
 st.session_state["live_v2_alerts_log"] = db_v2_alerts
 
+@st.cache_data(ttl=30)
+def load_spikes_by_date_range(start_date_str, end_date_str):
+    """Load spikes from the iv4_spikes collection for a given date range (YYYY-MM-DD)."""
+    try:
+        col = get_db()["iv4_spikes"]
+        start_query = f"{start_date_str} 00:00:00"
+        end_query = f"{end_date_str} 23:59:59"
+        cursor = col.find({
+            "ts_ist": { "$gte": start_query, "$lte": end_query }
+        }).sort("fetched_at", -1)
+        docs = list(cursor)
+        if not docs:
+            return pd.DataFrame()
+        df_spikes = pd.DataFrame(docs).drop(columns=["_id"], errors="ignore")
+        df_spikes = df_spikes.rename(columns={
+            "symbol": "underlying_symbol",
+            "spot_price": "last_price"
+        })
+        return df_spikes
+    except Exception as e:
+        st.error(f"Error loading spikes for range {start_date_str} to {end_date_str}: {e}")
+        return pd.DataFrame()
+
+def render_all_movers_page():
+    st.html("""
+    <div class="header-banner">
+      <div>
+        <div class="header-title">⚡ All Volatility Movers &amp; Shakers</div>
+        <div class="header-sub">Showing all positive and negative changes in Implied Volatility (IV4)</div>
+      </div>
+      <div style="text-align:right;">
+        <div class="header-badge"><span class="pulse-dot"></span> Live</div>
+      </div>
+    </div>
+    """)
+    
+    # Initialize movers_start_date and movers_end_date if not present
+    if "movers_start_date" not in st.session_state or "movers_end_date" not in st.session_state:
+        if not df.empty and "ts_ist" in df.columns:
+            try:
+                latest_ts_str = df.iloc[0]["ts_ist"].split(" ")[0]
+                latest_date = datetime.strptime(latest_ts_str, "%Y-%m-%d").date()
+                st.session_state["movers_start_date"] = latest_date
+                st.session_state["movers_end_date"] = latest_date
+            except Exception:
+                st.session_state["movers_start_date"] = datetime.now().date()
+                st.session_state["movers_end_date"] = datetime.now().date()
+        else:
+            st.session_state["movers_start_date"] = datetime.now().date()
+            st.session_state["movers_end_date"] = datetime.now().date()
+
+    earliest_d = datetime.strptime("2026-08-10", "%Y-%m-%d").date()
+    today_d = datetime.now().date()
+
+    # Action Bar for navigation: Back button + date navigation side by side
+    col_back, col_nav = st.columns([2, 8])
+    
+    with col_back:
+        if st.button("◀ Go Back", key="go_back_movers_btn"):
+            st.session_state["current_page"] = "main"
+            st.rerun()
+            
+    with col_nav:
+        nav_col1, nav_col2, nav_col3 = st.columns([1, 4, 1])
+        with nav_col1:
+            at_min = (st.session_state["movers_start_date"] <= earliest_d)
+            if st.button("◀", key="prev_movers_day", help="Shift range back by 1 day", disabled=at_min):
+                st.session_state["movers_start_date"] -= timedelta(days=1)
+                st.session_state["movers_end_date"] -= timedelta(days=1)
+                st.rerun()
+        with nav_col2:
+            # We align it with a date_input (calendar range selector)
+            selected_dates = st.date_input(
+                label="Select Date Range",
+                value=(st.session_state["movers_start_date"], st.session_state["movers_end_date"]),
+                min_value=earliest_d,
+                max_value=today_d,
+                key="movers_date_input",
+                label_visibility="collapsed"
+            )
+            
+            # Handle st.date_input returning a tuple of length 1 or 2
+            if isinstance(selected_dates, tuple) or isinstance(selected_dates, list):
+                if len(selected_dates) == 1:
+                    start_date = selected_dates[0]
+                    end_date = selected_dates[0]
+                elif len(selected_dates) == 2:
+                    start_date = selected_dates[0]
+                    end_date = selected_dates[1]
+                else:
+                    start_date = st.session_state["movers_start_date"]
+                    end_date = st.session_state["movers_end_date"]
+            else:
+                start_date = selected_dates
+                end_date = selected_dates
+                
+            if (start_date != st.session_state["movers_start_date"]) or (end_date != st.session_state["movers_end_date"]):
+                st.session_state["movers_start_date"] = start_date
+                st.session_state["movers_end_date"] = end_date
+                st.rerun()
+                
+        with nav_col3:
+            at_max = (st.session_state["movers_end_date"] >= today_d)
+            if st.button("▶", key="next_movers_day", help="Shift range forward by 1 day", disabled=at_max):
+                st.session_state["movers_start_date"] += timedelta(days=1)
+                st.session_state["movers_end_date"] += timedelta(days=1)
+                st.rerun()
+                
+    st.html("<div style='margin-bottom:20px'></div>")
+    
+    # Load spikes/crushes for selected date range
+    start_date_str = st.session_state["movers_start_date"].strftime("%Y-%m-%d")
+    end_date_str = st.session_state["movers_end_date"].strftime("%Y-%m-%d")
+    spikes_crushes_df = load_spikes_by_date_range(start_date_str, end_date_str)
+    
+    change_df = spikes_crushes_df[spikes_crushes_df["iv4_change_5m"] != 0].copy() if not spikes_crushes_df.empty else pd.DataFrame()
+    
+    m_col_up, m_col_down = st.columns(2)
+    
+    # Format date label
+    if start_date_str == end_date_str:
+        date_lbl = st.session_state["movers_start_date"].strftime("%d %b %Y")
+    else:
+        date_lbl = f"{st.session_state['movers_start_date'].strftime('%d %b')} - {st.session_state['movers_end_date'].strftime('%d %b %Y')}"
+    
+    with m_col_up:
+        st.markdown(f"**🔥 Volatility Spikes ({date_lbl})**")
+        spikes = pd.DataFrame()
+        if not change_df.empty:
+            spikes = change_df[change_df["iv4_change_5m"] > 0].sort_values("iv4_change_5m", ascending=False)
+            
+        if not spikes.empty:
+            csv_spikes = spikes.to_csv(index=False)
+            st.download_button(
+                label="📥 Download Spikes CSV",
+                data=csv_spikes,
+                file_name=f"volatility_spikes_{start_date_str}_to_{end_date_str}.csv",
+                mime="text/csv",
+                key="download_spikes_btn"
+            )
+            
+        rows_up = ""
+        if spikes.empty:
+            rows_up = "<tr><td colspan='5' style='text-align:center;color:#64748b;padding:20px;'>No spikes in this range</td></tr>"
+        else:
+            for _, r in spikes.iterrows():
+                # Extract time part
+                time_str = "—"
+                if "ts_ist" in r and r["ts_ist"]:
+                    try:
+                        # If multi-day range, include date in the time column to be clear
+                        if start_date_str != end_date_str:
+                            time_str = r["ts_ist"][:16] # "YYYY-MM-DD HH:MM"
+                        else:
+                            time_str = r["ts_ist"].split(" ")[1][:8] # "HH:MM:SS"
+                    except Exception:
+                        pass
+                        
+                strike_info = "—"
+                if isinstance(r.get("top_strike_iv_change_5m"), dict):
+                    ts = r["top_strike_iv_change_5m"]
+                    strike_info = f"<span class='ce-iv' style='font-weight:600'>{ts.get('strike')} {ts.get('side')}</span> ({ts.get('change'):+.2f}%)"
+                
+                rows_up += f"""
+                <tr>
+                  <td style="color:#64748b;font-family:'JetBrains Mono';font-size:0.75rem">{time_str}</td>
+                  <td style="text-align:left;font-weight:600;color:#e2e8f0">{r['underlying_symbol']}</td>
+                  <td>{r['iv4']:.2f}%</td>
+                  <td style="color:#34d399;font-weight:700">+{r['iv4_change_5m']:.2f}%</td>
+                  <td style="font-size:0.75rem;color:#94a3b8">{strike_info}</td>
+                </tr>
+                """
+                
+        table_up_html = f"""
+        <div style="background:#0d1625;border:1px solid rgba(255,255,255,0.06);border-radius:12px;overflow:hidden;">
+          <table class="iv4-table">
+            <thead>
+              <tr>
+                <th style="text-align:left">Time</th>
+                <th style="text-align:left">Symbol</th>
+                <th>IV4</th>
+                <th>Change</th>
+                <th>Top Strike Driver</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows_up}
+            </tbody>
+          </table>
+        </div>
+        """
+        st.html(table_up_html)
+
+    with m_col_down:
+        st.markdown(f"**❄️ Volatility Crushes ({date_lbl})**")
+        crushes = pd.DataFrame()
+        if not change_df.empty:
+            crushes = change_df[change_df["iv4_change_5m"] < 0].sort_values("iv4_change_5m", ascending=True)
+            
+        if not crushes.empty:
+            csv_crushes = crushes.to_csv(index=False)
+            st.download_button(
+                label="📥 Download Crushes CSV",
+                data=csv_crushes,
+                file_name=f"volatility_crushes_{start_date_str}_to_{end_date_str}.csv",
+                mime="text/csv",
+                key="download_crushes_btn"
+            )
+            
+        rows_down = ""
+        if crushes.empty:
+            rows_down = "<tr><td colspan='5' style='text-align:center;color:#64748b;padding:20px;'>No crushes in this range</td></tr>"
+        else:
+            for _, r in crushes.iterrows():
+                # Extract time part
+                time_str = "—"
+                if "ts_ist" in r and r["ts_ist"]:
+                    try:
+                        if start_date_str != end_date_str:
+                            time_str = r["ts_ist"][:16] # "YYYY-MM-DD HH:MM"
+                        else:
+                            time_str = r["ts_ist"].split(" ")[1][:8] # "HH:MM:SS"
+                    except Exception:
+                        pass
+                        
+                strike_info = "—"
+                if isinstance(r.get("top_strike_iv_change_5m"), dict):
+                    ts = r["top_strike_iv_change_5m"]
+                    strike_info = f"<span class='pe-iv' style='font-weight:600'>{ts.get('strike')} {ts.get('side')}</span> ({ts.get('change'):+.2f}%)"
+                
+                rows_down += f"""
+                <tr>
+                  <td style="color:#64748b;font-family:'JetBrains Mono';font-size:0.75rem">{time_str}</td>
+                  <td style="text-align:left;font-weight:600;color:#e2e8f0">{r['underlying_symbol']}</td>
+                  <td>{r['iv4']:.2f}%</td>
+                  <td style="color:#f87171;font-weight:700">{r['iv4_change_5m']:.2f}%</td>
+                  <td style="font-size:0.75rem;color:#94a3b8">{strike_info}</td>
+                </tr>
+                """
+                
+        table_down_html = f"""
+        <div style="background:#0d1625;border:1px solid rgba(255,255,255,0.06);border-radius:12px;overflow:hidden;">
+          <table class="iv4-table">
+            <thead>
+              <tr>
+                <th style="text-align:left">Time</th>
+                <th style="text-align:left">Symbol</th>
+                <th>IV4</th>
+                <th>Change</th>
+                <th>Top Strike Driver</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows_down}
+            </tbody>
+          </table>
+        </div>
+        """
+        st.html(table_down_html)
+
+if "current_page" not in st.session_state:
+    st.session_state["current_page"] = "main"
+
+if st.session_state["current_page"] == "movers_all":
+    render_all_movers_page()
+    st.stop()
+
 # ─── Header Banner ────────────────────────────────────────────────────────────
 total = len(df)
 ts_str = df.iloc[0]["ts_ist"] if not df.empty and "ts_ist" in df.columns else "—"
@@ -1008,7 +1275,14 @@ with tab1:
         st.html("<div style='margin-bottom:28px'></div>")
 
         # Movers & Shakers
-        st.html("""<div class="section-label">⚡ Volatility Movers &amp; Shakers (15-Minute Change)</div>""")
+        col_lbl, col_btn = st.columns([8, 2])
+        with col_lbl:
+            st.html("""<div class="section-label">⚡ Volatility Movers &amp; Shakers (15-Minute Change)</div>""")
+        with col_btn:
+            st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+            if st.button("See All ↗", key="see_all_movers_btn"):
+                st.session_state["current_page"] = "movers_all"
+                st.rerun()
 
         m_col_up, m_col_down = st.columns(2)
         change_df = df[df["iv4_change_5m"] != 0].copy()

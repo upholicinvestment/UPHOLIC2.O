@@ -20,10 +20,22 @@ function extractClientIdFromToken(token) {
   return null;
 }
 
+// Load all configured Dhan tokens dynamically
+const tokenKeys = Object.keys(process.env)
+  .filter(key => key === 'DHAN_TOKEN' || /^DHAN_TOKEN_\d+$/.test(key))
+  .sort((a, b) => {
+    if (a === 'DHAN_TOKEN') return -1;
+    if (b === 'DHAN_TOKEN') return 1;
+    const numA = parseInt(a.split('_')[2], 10);
+    const numB = parseInt(b.split('_')[2], 10);
+    return numA - numB;
+  });
+const tokensList = tokenKeys
+  .map(key => process.env[key] ? process.env[key].trim() : '')
+  .filter(Boolean);
+
 const config = {
-  tokens: [
-    process.env.DHAN_TOKEN,
-  ].filter(Boolean),
+  tokens: tokensList,
 
   optionChainUrl: process.env.DHAN_OPTION_CHAIN_URL || 'https://api.dhan.co/v2/optionchain',
   expiryListUrl: process.env.DHAN_EXPIRY_LIST_URL || 'https://api.dhan.co/v2/optionchain/expirylist',
@@ -51,14 +63,23 @@ if (config.tokens.length === 0) {
 }
 
 // Auto-extract client-id if not provided explicitly
-if (!config.clientId) {
-  config.clientId = extractClientIdFromToken(config.tokens[0]);
-  if (config.clientId) {
-    console.log(`[Config] Automatically extracted client ID: ${config.clientId}`);
-  } else {
-    throw new Error('Dhan Client ID is missing. Set DHAN_CLIENT_ID or provide a valid Dhan JWT token.');
-  }
+const defaultClientId = config.clientId || extractClientIdFromToken(config.tokens[0]);
+if (!defaultClientId) {
+  throw new Error('Dhan Client ID is missing. Set DHAN_CLIENT_ID or provide a valid Dhan JWT token.');
 }
+config.clientId = defaultClientId;
+
+// Create token configurations (token + client ID per worker)
+config.tokenConfigs = config.tokens.map((token, index) => {
+  const extractedId = extractClientIdFromToken(token);
+  const tokenClientId = extractedId || defaultClientId;
+  return { token, clientId: tokenClientId };
+});
+
+console.log(`[Config] Configured ${config.tokenConfigs.length} Dhan token(s) for parallel fetching.`);
+config.tokenConfigs.forEach((tc, idx) => {
+  console.log(`  - Worker #${idx + 1}: Client ID = ${tc.clientId}`);
+});
 
 // Validate MARKET_EXPIRY_DATE — required, must be a valid future date
 if (!config.marketExpiryDate) {

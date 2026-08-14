@@ -338,7 +338,7 @@ function getExpiryDate() {
   return config.marketExpiryDate;
 }
 
-async function fetchOptionChain(symbolObj, expiryDate, token) {
+async function fetchOptionChain(symbolObj, expiryDate, token, clientId) {
   const payload = {
     UnderlyingScrip: parseInt(symbolObj.security_id, 10),
     UnderlyingSeg: symbolObj.exchange_segment,
@@ -347,7 +347,7 @@ async function fetchOptionChain(symbolObj, expiryDate, token) {
   
   const headers = {
     'access-token': token,
-    'client-id': config.clientId,
+    'client-id': clientId || config.clientId,
     'Content-Type': 'application/json'
   };
   
@@ -577,174 +577,229 @@ export async function startIngestionLoop() {
   // We enforce this with a simple nextRequestAt wall-clock check rather than a
   // limiter class, so there is no abstraction layer that can silently fail.
   const rateLimitMs = Math.round(config.rateLimitSeconds * 1000);
-  const token = config.tokens[0]; // single account — only one token needed
-  console.log(`[Ingestor] Rate limit: 1 request every ${rateLimitMs}ms (${config.rateLimitSeconds}s).`);
+  console.log(`[Ingestor] Rate limit: 1 request every ${rateLimitMs}ms per token.`);
   
   // Load symbols from JSON file
   const symbolsPath = new URL('../symbols.json', import.meta.url);
   const symbols = JSON.parse(await fs.readFile(symbolsPath, 'utf-8'));
   
-  console.log(`[Ingestor] Loaded ${symbols.length} symbols. Initializing ingestion daemon loop.`);
+  console.log(`[Ingestor] Loaded ${symbols.length} symbols.`);
   
-  let cycleCount = 0;
+  const numWorkers = config.tokenConfigs.length;
+  console.log(`[Ingestor] Starting ${numWorkers} ingestion worker loops in parallel.`);
   
-  // Expose global status object for Express health check
-  global.ingestionStatus = {
-    running: true,
+  // Distribute symbols contiguously and as evenly as possible
+  const chunks = [];
+  let startIndex = 0;
+  for (let i = 0; i < numWorkers; i++) {
+    const remainingSymbols = symbols.length - startIndex;
+    const remainingTokens = numWorkers - i;
+    const currentChunkSize = Math.ceil(remainingSymbols / remainingTokens);
+    chunks.push(symbols.slice(startIndex, startIndex + currentChunkSize));
+    startIndex += currentChunkSize;
+  }
+  
+  // Initialize worker states
+  const workerStates = config.tokenConfigs.map((tc, idx) => ({
+    index: idx,
+    clientId: tc.clientId,
     cycleCount: 0,
-    marketOpen: false,
     lastCycleDuration: 0,
     lastCycleStats: { success: 0, fail: 0 },
     currentSymbol: null,
     lastActive: new Date().toISOString(),
-    error: null
+    error: null,
+    symbolsCount: chunks[idx].length
+  }));
+  
+  // Expose global status object for Express health check/status
+  global.ingestionStatus = {
+    running: true,
+    get marketOpen() {
+      return checkMarketOpen().isOpen;
+    },
+    get cycleCount() {
+      return Math.max(...workerStates.map(w => w.cycleCount), 0);
+    },
+    get lastCycleDuration() {
+      return Math.max(...workerStates.map(w => w.lastCycleDuration), 0);
+    },
+    get lastCycleStats() {
+      return {
+        success: workerStates.reduce((sum, w) => sum + w.lastCycleStats.success, 0),
+        fail: workerStates.reduce((sum, w) => sum + w.lastCycleStats.fail, 0),
+      };
+    },
+    get currentSymbol() {
+      return workerStates.map(w => w.currentSymbol).filter(Boolean).join(', ');
+    },
+    get lastActive() {
+      const dates = workerStates.map(w => new Date(w.lastActive).getTime());
+      return new Date(Math.max(...dates, Date.now())).toISOString();
+    },
+    get error() {
+      return workerStates.map(w => w.error).filter(Boolean).join(' | ') || null;
+    },
+    workers: workerStates
   };
   
-  while (true) {
-    try {
-      const gate = checkMarketOpen();
-      global.ingestionStatus.lastActive = new Date().toISOString();
-      
-      if (!gate.isOpen) {
-        global.ingestionStatus.marketOpen = false;
-        console.log(`[Ingestor] Market is closed. Reason: ${gate.reason}. Checking again in 60 seconds.`);
-        await new Promise(resolve => setTimeout(resolve, 60000));
-        continue;
-      }
-      
-      global.ingestionStatus.marketOpen = true;
-      cycleCount++;
-      global.ingestionStatus.cycleCount = cycleCount;
-      console.log(`[Ingestor] Starting ingestion cycle #${cycleCount} over ${symbols.length} symbols...`);
-      
-      const cycleStart = Date.now();
-      let successCount = 0;
-      let failCount = 0;
-      
-      // nextRequestAt tracks when the next API call is allowed.
-      // It is set BEFORE each call so we guarantee ≥ rateLimitMs between request STARTS.
-      let nextRequestAt = 0;
-      
-      for (const symbolObj of symbols) {
-        global.ingestionStatus.currentSymbol = symbolObj.symbol;
-        global.ingestionStatus.lastActive = new Date().toISOString();
-
-        // Enforce rate limit: wait until nextRequestAt before firing the API call
-        const waitMs = nextRequestAt - Date.now();
-        if (waitMs > 0) {
-          await new Promise(resolve => setTimeout(resolve, waitMs));
-        }
-        // Schedule next request BEFORE the call so network/DB time doesn't eat into the gap
-        nextRequestAt = Date.now() + rateLimitMs;
+  const runWorker = async (workerIndex, symbolList, token, clientId) => {
+    const state = workerStates[workerIndex];
+    console.log(`[Worker #${workerIndex + 1}] Initialized with ${symbolList.length} symbols.`);
+    
+    while (true) {
+      try {
+        const gate = checkMarketOpen();
+        state.lastActive = new Date().toISOString();
         
-        try {
-          // 1. Get expiry date from env (MARKET_EXPIRY_DATE) — validated at startup
-          const expiryDate = getExpiryDate();
-          
-          // 2. Fetch Option Chain
-          const rawResponse = await fetchOptionChain(symbolObj, expiryDate, token);
-          if (!rawResponse || rawResponse.status !== 'success' || !rawResponse.data) {
-            const apiError = rawResponse?.data?.['808'] || rawResponse?.data?.['810'] || rawResponse?.remarks || 'API failure';
-            throw new Error(`Dhan API Error: ${apiError}`);
-          }
-          
-          const now = new Date();
-
-          // 3. Fetch previous snapshot from DB (from latest_snapshot)
-          const previousSnapshot = await getPreviousSnapshot(symbolObj.symbol);
-
-          // 4. Parse and structure option chain + calculate IV4 metrics
-          const snapshotDoc = mapResponseToDocument(symbolObj, rawResponse.data, previousSnapshot, expiryDate, now);
-          
-          // 5. Write immediately to MongoDB
-          await writeSnapshot(snapshotDoc);
-          
-          successCount++;
-          console.log(JSON.stringify({
-            level: 'INFO',
-            timestamp: now.toISOString(),
-            event: 'symbol_ingestion_success',
-            symbol: symbolObj.symbol,
-            security_id: symbolObj.security_id,
-            spot_price: snapshotDoc.spot_price,
-            optionsCount: snapshotDoc.options.length,
-            expiry: expiryDate,
-            iv4: snapshotDoc.iv4
-          }));
-
-          // 6. Evaluate crossovers and raise alerts immediately
-          if (previousSnapshot) {
-            const prevSpot = Number(previousSnapshot.last_price || previousSnapshot.spot_price) || 0;
-            const prevFlip = Number(previousSnapshot.Flip_strike) || 0;
-            const currentSpot = snapshotDoc.spot_price;
-            const currentFlip = snapshotDoc.Flip_strike;
-
-            // Crossovers
-            const priceCrossedUp = prevSpot < prevFlip && currentSpot >= currentFlip;
-            const bullishFlow = snapshotDoc.call_net_flow > 0 && snapshotDoc.put_net_flow < 0 && snapshotDoc.iv_ratio > 1.15;
-
-            const priceCrossedDown = prevSpot > prevFlip && currentSpot <= currentFlip;
-            const bearishFlow = snapshotDoc.put_net_flow > 0 && snapshotDoc.call_net_flow < 0 && snapshotDoc.iv_ratio < (1 / 1.15);
-
-            if (priceCrossedUp && bullishFlow) {
-              const alertDoc = {
-                timestamp: now,
-                ts_ist: snapshotDoc.ts_ist,
-                symbol: symbolObj.symbol,
-                direction: 'BULLISH',
-                spot: currentSpot,
-                details: `Crossed Gamma Flip. IV Ratio: ${snapshotDoc.iv_ratio.toFixed(2)} | Call Flow: +ve`
-              };
-              await insertAlert(alertDoc).catch((e) => {
-                console.error(`[Ingestor] Failed to save bullish alert for ${symbolObj.symbol}:`, e.message);
-              });
-              console.log(`🚨 [Ingestor ALERT] ${symbolObj.symbol} BULLISH BREAKOUT! Spot crossed Flip at ₹${currentSpot}`);
-            }
-
-            if (priceCrossedDown && bearishFlow) {
-              const alertDoc = {
-                timestamp: now,
-                ts_ist: snapshotDoc.ts_ist,
-                symbol: symbolObj.symbol,
-                direction: 'BEARISH',
-                spot: currentSpot,
-                details: `Dropped below Gamma Flip. IV Ratio: ${snapshotDoc.iv_ratio.toFixed(2)} | Put Flow: +ve`
-              };
-              await insertAlert(alertDoc).catch((e) => {
-                console.error(`[Ingestor] Failed to save bearish alert for ${symbolObj.symbol}:`, e.message);
-              });
-              console.log(`🚨 [Ingestor ALERT] ${symbolObj.symbol} BEARISH BREAKDOWN! Spot dropped below Flip at ₹${currentSpot}`);
-            }
-          }
-        } catch (err) {
-          failCount++;
-          
-          console.error(JSON.stringify({
-            level: 'ERROR',
-            timestamp: new Date().toISOString(),
-            event: 'symbol_ingestion_failed',
-            symbol: symbolObj.symbol,
-            security_id: symbolObj.security_id,
-            error: err.message
-          }));
+        if (!gate.isOpen) {
+          console.log(`[Worker #${workerIndex + 1}] Market is closed. Reason: ${gate.reason}. Checking again in 60 seconds.`);
+          await new Promise(resolve => setTimeout(resolve, 60000));
+          continue;
         }
+        
+        state.cycleCount++;
+        console.log(`[Worker #${workerIndex + 1}] Starting ingestion cycle #${state.cycleCount} over ${symbolList.length} symbols...`);
+        
+        const cycleStart = Date.now();
+        let successCount = 0;
+        let failCount = 0;
+        
+        // nextRequestAt tracks when the next API call is allowed.
+        // It is set BEFORE each call so we guarantee ≥ rateLimitMs between request STARTS.
+        let nextRequestAt = 0;
+        
+        for (const symbolObj of symbolList) {
+          state.currentSymbol = symbolObj.symbol;
+          state.lastActive = new Date().toISOString();
+  
+          // Enforce rate limit: wait until nextRequestAt before firing the API call
+          const waitMs = nextRequestAt - Date.now();
+          if (waitMs > 0) {
+            await new Promise(resolve => setTimeout(resolve, waitMs));
+          }
+          // Schedule next request BEFORE the call so network/DB time doesn't eat into the gap
+          nextRequestAt = Date.now() + rateLimitMs;
+          
+          try {
+            // 1. Get expiry date from env (MARKET_EXPIRY_DATE) — validated at startup
+            const expiryDate = getExpiryDate();
+            
+            // 2. Fetch Option Chain using worker-specific token and client ID
+            const rawResponse = await fetchOptionChain(symbolObj, expiryDate, token, clientId);
+            if (!rawResponse || rawResponse.status !== 'success' || !rawResponse.data) {
+              const apiError = rawResponse?.data?.['808'] || rawResponse?.data?.['810'] || rawResponse?.remarks || 'API failure';
+              throw new Error(`Dhan API Error: ${apiError}`);
+            }
+            
+            const now = new Date();
+  
+            // 3. Fetch previous snapshot from DB (from latest_snapshot)
+            const previousSnapshot = await getPreviousSnapshot(symbolObj.symbol);
+  
+            // 4. Parse and structure option chain + calculate IV4 metrics
+            const snapshotDoc = mapResponseToDocument(symbolObj, rawResponse.data, previousSnapshot, expiryDate, now);
+            
+            // 5. Write immediately to MongoDB
+            await writeSnapshot(snapshotDoc);
+            
+            successCount++;
+            console.log(JSON.stringify({
+              level: 'INFO',
+              timestamp: now.toISOString(),
+              event: 'symbol_ingestion_success',
+              worker: workerIndex + 1,
+              symbol: symbolObj.symbol,
+              security_id: symbolObj.security_id,
+              spot_price: snapshotDoc.spot_price,
+              optionsCount: snapshotDoc.options.length,
+              expiry: expiryDate,
+              iv4: snapshotDoc.iv4
+            }));
+  
+            // 6. Evaluate crossovers and raise alerts immediately
+            if (previousSnapshot) {
+              const prevSpot = Number(previousSnapshot.last_price || previousSnapshot.spot_price) || 0;
+              const prevFlip = Number(previousSnapshot.Flip_strike) || 0;
+              const currentSpot = snapshotDoc.spot_price;
+              const currentFlip = snapshotDoc.Flip_strike;
+  
+              // Crossovers
+              const priceCrossedUp = prevSpot < prevFlip && currentSpot >= currentFlip;
+              const bullishFlow = snapshotDoc.call_net_flow > 0 && snapshotDoc.put_net_flow < 0 && snapshotDoc.iv_ratio > 1.15;
+  
+              const priceCrossedDown = prevSpot > prevFlip && currentSpot <= currentFlip;
+              const bearishFlow = snapshotDoc.put_net_flow > 0 && snapshotDoc.call_net_flow < 0 && snapshotDoc.iv_ratio < (1 / 1.15);
+  
+              if (priceCrossedUp && bullishFlow) {
+                const alertDoc = {
+                  timestamp: now,
+                  ts_ist: snapshotDoc.ts_ist,
+                  symbol: symbolObj.symbol,
+                  direction: 'BULLISH',
+                  spot: currentSpot,
+                  details: `Crossed Gamma Flip. IV Ratio: ${snapshotDoc.iv_ratio.toFixed(2)} | Call Flow: +ve`
+                };
+                await insertAlert(alertDoc).catch((e) => {
+                  console.error(`[Worker #${workerIndex + 1}] Failed to save bullish alert for ${symbolObj.symbol}:`, e.message);
+                });
+                console.log(`🚨 [Worker #${workerIndex + 1} ALERT] ${symbolObj.symbol} BULLISH BREAKOUT! Spot crossed Flip at ₹${currentSpot}`);
+              }
+  
+              if (priceCrossedDown && bearishFlow) {
+                const alertDoc = {
+                  timestamp: now,
+                  ts_ist: snapshotDoc.ts_ist,
+                  symbol: symbolObj.symbol,
+                  direction: 'BEARISH',
+                  spot: currentSpot,
+                  details: `Dropped below Gamma Flip. IV Ratio: ${snapshotDoc.iv_ratio.toFixed(2)} | Put Flow: +ve`
+                };
+                await insertAlert(alertDoc).catch((e) => {
+                  console.error(`[Worker #${workerIndex + 1}] Failed to save bearish alert for ${symbolObj.symbol}:`, e.message);
+                });
+                console.log(`🚨 [Worker #${workerIndex + 1} ALERT] ${symbolObj.symbol} BEARISH BREAKDOWN! Spot dropped below Flip at ₹${currentSpot}`);
+              }
+            }
+          } catch (err) {
+            failCount++;
+            
+            console.error(JSON.stringify({
+              level: 'ERROR',
+              timestamp: new Date().toISOString(),
+              event: 'symbol_ingestion_failed',
+              worker: workerIndex + 1,
+              symbol: symbolObj.symbol,
+              security_id: symbolObj.security_id,
+              error: err.message
+            }));
+          }
+        }
+        
+        const duration = (Date.now() - cycleStart) / 1000;
+        state.lastCycleDuration = duration;
+        state.lastCycleStats = { success: successCount, fail: failCount };
+        state.currentSymbol = null;
+        state.error = null;
+        
+        console.log(`[Worker #${workerIndex + 1}] Cycle #${state.cycleCount} completed in ${duration.toFixed(1)}s. Success: ${successCount}, Fail: ${failCount}.`);
+        
+        // Delay briefly between cycles
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      } catch (cycleError) {
+        console.error(`[Worker #${workerIndex + 1}] Error in ingestion loop:`, cycleError);
+        state.error = cycleError.message;
+        await new Promise(resolve => setTimeout(resolve, 10000));
       }
-      
-      const duration = (Date.now() - cycleStart) / 1000;
-      global.ingestionStatus.lastCycleDuration = duration;
-      global.ingestionStatus.lastCycleStats = { success: successCount, fail: failCount };
-      global.ingestionStatus.currentSymbol = null;
-      
-      console.log(`[Ingestor] Cycle #${cycleCount} completed in ${duration.toFixed(1)}s. Success: ${successCount}, Fail: ${failCount}.`);
-      
-      // Delay briefly between cycles
-      await new Promise(resolve => setTimeout(resolve, 5000));
-    } catch (cycleError) {
-      console.error('[Ingestor] Error in master ingestion loop:', cycleError);
-      global.ingestionStatus.error = cycleError.message;
-      await new Promise(resolve => setTimeout(resolve, 10000));
     }
-  }
+  };
+  
+  // Launch all workers concurrently
+  const promises = config.tokenConfigs.map((tc, idx) => {
+    return runWorker(idx, chunks[idx], tc.token, tc.clientId);
+  });
+  
+  await Promise.all(promises);
 }
 
 export {
