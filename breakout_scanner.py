@@ -57,7 +57,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         pass # Suppress logging to keep console clean
 
 def start_health_server():
-    port = int(os.getenv("PORT", "8000"))
+    port = int(os.getenv("BREAKOUT_SCANNER_PORT", os.getenv("PORT", "8000")))
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     print(f"[HEALTH] HTTP server running on port {port} for Render health checks.")
     server.serve_forever()
