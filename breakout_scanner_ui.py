@@ -5,7 +5,7 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
 from dotenv import load_dotenv
 
@@ -18,8 +18,24 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Autorefresh the dashboard every 5 seconds to load instant updates without manual refresh
-st_autorefresh(interval=5000, key="alerts_log_refresher")
+def is_market_open():
+    # India is UTC +5:30
+    tz_india = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(tz_india)
+    
+    # Weekday check (0=Monday, 4=Friday, 5=Saturday, 6=Sunday)
+    if now_ist.weekday() >= 5:
+        return False
+        
+    # Time check (9:15 AM to 3:40 PM IST)
+    market_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+    market_close = now_ist.replace(hour=15, minute=40, second=0, microsecond=0)
+    
+    return market_open <= now_ist <= market_close
+
+# Autorefresh the dashboard every 5 seconds to load instant updates without manual refresh (only during market hours)
+if is_market_open():
+    st_autorefresh(interval=5000, key="alerts_log_refresher")
 
 # Initialize Session State for Alert Log
 if "live_alerts_log" not in st.session_state:
@@ -745,6 +761,8 @@ def load_spikes_by_date_range(start_date_str, end_date_str):
         end_query = f"{end_date_str} 23:59:59"
         cursor = col.find({
             "ts_ist": { "$gte": start_query, "$lte": end_query }
+        }, {
+            "options": 0
         }).sort("fetched_at", -1)
         docs = list(cursor)
         if not docs:
