@@ -1,0 +1,14 @@
+{
+  "status": "DERIVED_READ_ONLY_SOURCE",
+  "mongo_uri": "mongodb://127.0.0.1:27017",
+  "database": "UPHOLIC2_O",
+  "collection": "snapshots",
+  "source_modified": false,
+  "query_from_utc": "2026-08-21T07:50:00+00:00",
+  "query_to_utc": "2026-08-21T08:30:29.614161+00:00",
+  "snapshots_seen_this_run": 1762,
+  "five_minute_rows_total": 55593,
+  "symbols": 208,
+  "latest_bucket_ist": "2026-08-21 13:55:00",
+  "output": "/home/ubuntu/UPHOLIC2.O/scanners/stock_breakout_retest_iv_quiet_v1/runtime/features/stock_option_features_5m.csv"
+}
