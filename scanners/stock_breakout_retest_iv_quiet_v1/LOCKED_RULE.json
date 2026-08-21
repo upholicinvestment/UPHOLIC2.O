@@ -1,0 +1,31 @@
+{
+  "scanner": "Stock Breakout Retest IV Quiet Scanner v1",
+  "version": "1.0.0",
+  "frozen_at_ist": "2026-08-20 09:15:00",
+  "approval_status": "EXPERIMENTAL_FORWARD_WATCHLIST_ONLY",
+  "parameters": {
+    "direction": "LONG_ONLY",
+    "bar_minutes": 5,
+    "completed_candles_only": true,
+    "structure_lookback_bars": 120,
+    "resistance_zone_pct": 0.003,
+    "minimum_separated_touches": 3,
+    "touch_gap_minutes": 20,
+    "minimum_intervening_pullback_pct": 0.003,
+    "breakout_buffer_pct": 0.0005,
+    "state1_time_start_ist": "09:45",
+    "state1_time_end_ist": "14:45",
+    "state1_ce_iv_change_15_minimum": 0.5,
+    "extension_target_pct": 0.01,
+    "extension_horizon_calendar_days": 10,
+    "retest_horizon_calendar_days": 10,
+    "retest_option_volume_ratio_maximum": 0.25,
+    "entry": "NEXT_COMPLETED_5_MINUTE_SNAPSHOT_OPEN_PROXY",
+    "target": "OBSERVED_EXTENSION_HIGH_BEFORE_RETEST",
+    "stop": "LOWER_RESISTANCE_ZONE_BOUNDARY",
+    "maximum_active_states_per_symbol": 1,
+    "orders_enabled": false
+  },
+  "research_warning": "The rule was selected from a large search and only one historical event began in the confirmation period. Thresholds must remain unchanged during forward monitoring.",
+  "activation": "No broker connection. No order placement. Not eligible for strategy selector approval."
+}
