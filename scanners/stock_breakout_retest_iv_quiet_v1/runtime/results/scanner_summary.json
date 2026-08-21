@@ -1,0 +1,54 @@
+{
+  "scanner": "Stock Breakout Retest IV Quiet Scanner v1",
+  "status": "EXPERIMENTAL_FORWARD_WATCHLIST_ONLY",
+  "data_status": "FRESH",
+  "as_of_ist": "2026-08-21 14:11:05.220789",
+  "forward_start_ist": "2026-08-20 09:15:00",
+  "latest_completed_bucket_ist": "2026-08-21 13:55:00",
+  "staleness_minutes": 11.09,
+  "symbols_scanned": 208,
+  "completed_five_minute_rows": 55593,
+  "active_states": 30,
+  "signals_since_forward_start": 4,
+  "new_signals_this_run": 4,
+  "paper_entries": 4,
+  "paper_exits": 3,
+  "locked_rule_sha256": "ba07243e402805696e4eb1380e53f1519c3b3a35ec07f5af763871fa576222bc",
+  "source_feature_files": [
+    {
+      "path": "/home/ubuntu/UPHOLIC2.O/scanners/stock_breakout_retest_iv_quiet_v1/runtime/features/stock_option_features_5m.csv",
+      "sha256": "585b0a80115f5614a4bdbe2e5ce6be2645e3dc7b671f4f6f5d5e76bb1652349b"
+    }
+  ],
+  "parameters": {
+    "direction": "LONG_ONLY",
+    "bar_minutes": 5,
+    "completed_candles_only": true,
+    "structure_lookback_bars": 120,
+    "resistance_zone_pct": 0.003,
+    "minimum_separated_touches": 3,
+    "touch_gap_minutes": 20,
+    "minimum_intervening_pullback_pct": 0.003,
+    "breakout_buffer_pct": 0.0005,
+    "state1_time_start_ist": "09:45",
+    "state1_time_end_ist": "14:45",
+    "state1_ce_iv_change_15_minimum": 0.5,
+    "extension_target_pct": 0.01,
+    "extension_horizon_calendar_days": 10,
+    "retest_horizon_calendar_days": 10,
+    "retest_option_volume_ratio_maximum": 0.25,
+    "entry": "NEXT_COMPLETED_5_MINUTE_SNAPSHOT_OPEN_PROXY",
+    "target": "OBSERVED_EXTENSION_HIGH_BEFORE_RETEST",
+    "stop": "LOWER_RESISTANCE_ZONE_BOUNDARY",
+    "maximum_active_states_per_symbol": 1,
+    "orders_enabled": false
+  },
+  "warnings": [
+    "Experimental forward watchlist only; not approved for live trading.",
+    "No broker connection and no order placement are present.",
+    "Spot values are snapshots, not verified stock OHLC candles.",
+    "Option volume is a near-chain cumulative-volume increment proxy.",
+    "A stale-data status invalidates real-time interpretation."
+  ],
+  "raw_source_modified": false
+}
