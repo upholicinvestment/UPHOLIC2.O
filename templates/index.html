@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upholic | Volatility Terminal</title>
+    <meta name="description" content="Advanced Implied Volatility Analytics & Breakout Signals Dashboard">
+    
+    <!-- Google Fonts & FontAwesome -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- Custom Style -->
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Top Premium Header Banner -->
+        <header class="header-banner">
+            <div class="header-info">
+                <h1 class="header-title">⚡ Upholic Trading Terminal</h1>
+                <p class="header-sub">Advanced Implied Volatility Analytics &amp; Breakout Signals &nbsp;·&nbsp; Updated live in real-time</p>
+            </div>
+            <div class="header-status">
+                <div class="header-badge"><span class="pulse-dot"></span> Live</div>
+                <div class="last-sync-time" id="last-sync-time">Last sync: —</div>
+            </div>
+        </header>
+
+        <!-- Main Terminal Navigation Tabs -->
+        <nav class="terminal-tabs">
+            <button class="tab-btn active" data-tab="tab1"><i class="fa-solid fa-trophy"></i> Volatility Leaderboard</button>
+            <button class="tab-btn" data-tab="tab2"><i class="fa-solid fa-crosshairs"></i> Breakout Scanner</button>
+            <button class="tab-btn" data-tab="tab3"><i class="fa-solid fa-bell"></i> Live Alerts Log (V1)</button>
+            <button class="tab-btn" data-tab="tab4"><i class="fa-solid fa-fire"></i> Early Breakouts (V2)</button>
+            <button class="tab-btn" data-tab="tab5"><i class="fa-solid fa-cube"></i> Frozen Retest V1</button>
+        </nav>
+
+        <!-- Tab Contents Container -->
+        <main class="terminal-content">
+            
+            <!-- TAB 1: Volatility Leaderboard -->
+            <section id="tab1" class="tab-pane active">
+                <div class="section-label">Market Overview</div>
+                <div class="stats-strip">
+                    <div class="stat-box">
+                        <div class="stat-num" id="stat-total-stocks">—</div>
+                        <div class="stat-lbl">Total Stocks</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-num text-red" id="stat-highest-iv">—%</div>
+                        <div class="stat-lbl">Highest IV4</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-num text-blue" id="stat-avg-iv">—%</div>
+                        <div class="stat-lbl">Avg IV4</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-num text-purple" id="stat-high-vol">—</div>
+                        <div class="stat-lbl">High Volatility (≥30%)</div>
+                    </div>
+                </div>
+
+                <!-- Top 3 Podium Cards -->
+                <div class="section-label">🏆 Top Ranked Stocks by IV4</div>
+                <div class="podium-grid" id="podium-container">
+                    <!-- Dynamic Podium Cards go here -->
+                </div>
+
+                <!-- Spikes and Crushes side-by-side -->
+                <div class="movers-container">
+                    <div class="section-label">⚡ Volatility Movers &amp; Shakers (15-Minute Change)</div>
+                    <div class="movers-grid">
+                        <div class="movers-column">
+                            <h3>🔥 Volatility Spikes (Top 5 Positive Changes)</h3>
+                            <div class="table-container">
+                                <table class="terminal-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Symbol</th>
+                                            <th>IV4</th>
+                                            <th>Change</th>
+                                            <th>Top Strike Driver</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="spikes-table-body">
+                                        <!-- Dynamic Spikes rows -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="movers-column">
+                            <h3>❄️ Volatility Crushes (Top 5 Negative Changes)</h3>
+                            <div class="table-container">
+                                <table class="terminal-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Symbol</th>
+                                            <th>IV4</th>
+                                            <th>Change</th>
+                                            <th>Top Strike Driver</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="crushes-table-body">
+                                        <!-- Dynamic Crushes rows -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Volatility Analytics Charts -->
+                <div class="analytics-charts-grid">
+                    <div class="chart-card">
+                        <div class="section-label">📊 Top 30 Stocks — Overall IV4</div>
+                        <div class="canvas-wrapper">
+                            <canvas id="barChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <div class="section-label">📊 CE IV vs PE IV Dispersion</div>
+                        <div class="canvas-wrapper">
+                            <canvas id="scatterChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Intraday Trajectory Chart for single stock -->
+                <div class="trajectory-section">
+                    <div class="section-label">📈 Intraday IV4 Analytics (Today)</div>
+                    <div class="trajectory-controls">
+                        <label for="select-stock-analysis">SELECT STOCK FOR INTRADAY ANALYSIS</label>
+                        <select id="select-stock-analysis" class="terminal-select">
+                            <option value="">Loading symbols...</option>
+                        </select>
+                    </div>
+                    <div class="chart-card trajectory-chart-card">
+                        <div class="canvas-wrapper line-chart-wrapper">
+                            <canvas id="lineChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Full Leaderboard Table with Filters -->
+                <div class="leaderboard-section">
+                    <div class="section-label">📋 Full Leaderboard</div>
+                    <div class="filter-bar">
+                        <div class="filter-group flex-3">
+                            <label>SEARCH SYMBOL</label>
+                            <input type="text" id="leaderboard-search" placeholder="e.g. RELIANCE, HDFC, INFY…" class="terminal-input">
+                        </div>
+                        <div class="filter-group flex-1">
+                            <label>TOP N</label>
+                            <input type="number" id="leaderboard-limit" value="50" min="5" max="250" class="terminal-input">
+                        </div>
+                        <div class="filter-group flex-1">
+                            <label>MIN IV4 (%)</label>
+                            <input type="number" id="leaderboard-min-iv" value="0" min="0" max="200" class="terminal-input">
+                        </div>
+                    </div>
+
+                    <div class="table-container">
+                        <table class="terminal-table leaderboard-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Symbol</th>
+                                    <th>Spot</th>
+                                    <th>IV4 Overall</th>
+                                    <th>15m Change</th>
+                                    <th>Top Strike Driver</th>
+                                    <th>CE IV</th>
+                                    <th>PE IV</th>
+                                    <th>IV Skew</th>
+                                    <th>IV Ratio</th>
+                                    <th>Expiry</th>
+                                </tr>
+                            </thead>
+                            <tbody id="leaderboard-table-body">
+                                <!-- Dynamic Leaderboard rows -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 2: Breakout Scanner -->
+            <section id="tab2" class="tab-pane">
+                <div class="section-label">🎯 IV Breakout Scanner (Algorithmic Signals)</div>
+                <div class="action-bar-panel">
+                    <button class="terminal-btn btn-danger" onclick="clearLiveAlerts('breakoutscanner_alerts', null, 'tab2')"><i class="fa-solid fa-trash"></i> Clear Breakout Scanner Alerts</button>
+                    <div class="download-group">
+                        <span class="action-label">Download CSV:</span>
+                        <input type="date" id="dl-start-tab2" class="terminal-date">
+                        <input type="date" id="dl-end-tab2" class="terminal-date">
+                        <button class="terminal-btn btn-primary" onclick="downloadCSV('breakoutscanner_alerts', 'dl-start-tab2', 'dl-end-tab2')"><i class="fa-solid fa-download"></i> Download CSV</button>
+                    </div>
+                </div>
+
+                <div class="filter-bar">
+                    <div class="filter-group flex-2">
+                        <label>FILTER BY SIGNAL TYPE</label>
+                        <select id="breakout-filter-sig" class="terminal-select">
+                            <option value="ALL SIGNALS">ALL SIGNALS</option>
+                            <option value="BULLISH DIVERGENCE">BULLISH DIVERGENCE</option>
+                            <option value="BEARISH DIVERGENCE">BEARISH DIVERGENCE</option>
+                            <option value="CALL SHORT-COVERING SQUEEZE">CALL SHORT-COVERING SQUEEZE</option>
+                            <option value="PUT SHORT-COVERING">PUT SHORT-COVERING</option>
+                            <option value="NEUTRAL">NEUTRAL</option>
+                        </select>
+                    </div>
+                    <div class="filter-group flex-1">
+                        <label>SORT BY</label>
+                        <select id="breakout-sort-by" class="terminal-select">
+                            <option value="time-desc">Alert Time (Descending)</option>
+                            <option value="time-asc">Alert Time (Ascending)</option>
+                            <option value="ratio-desc">IV Ratio (Descending)</option>
+                            <option value="ratio-asc">IV Ratio (Ascending)</option>
+                            <option value="skew-desc">IV Skew (Descending)</option>
+                            <option value="skew-asc">IV Skew (Ascending)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <table class="terminal-table">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Alert Time</th>
+                                <th>Symbol</th>
+                                <th>Spot Price</th>
+                                <th>Edge Signal</th>
+                                <th>IV Ratio</th>
+                                <th>IV Skew</th>
+                                <th>VW Call IV</th>
+                                <th>VW Put IV</th>
+                                <th>Call Net Flow</th>
+                                <th>Put Net Flow</th>
+                            </tr>
+                        </thead>
+                        <tbody id="breakout-table-body">
+                            <!-- Dynamic rows -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- TAB 3: Live Alerts Log (V1) -->
+            <section id="tab3" class="tab-pane">
+                <div class="section-label">🔔 Live Breakout Crossing Alerts (V1)</div>
+                <div class="sub-tabs-bar">
+                    <button class="sub-tab-btn active" data-subtab="tab3-intraday" onclick="switchSubTab(this, 'tab3-intraday')">🚀 Intraday Breakouts</button>
+                    <button class="sub-tab-btn" data-subtab="tab3-positional" onclick="switchSubTab(this, 'tab3-positional')">📅 Positional Breakouts</button>
+                </div>
+
+                <!-- Sub-tab 1: Intraday V1 -->
+                <div id="tab3-intraday" class="sub-tab-content active">
+                    <div class="action-bar-panel">
+                        <button class="terminal-btn btn-danger" onclick="clearLiveAlerts('v1_scanner_alerts', 'INTRADAY', 'tab3')"><i class="fa-solid fa-trash"></i> Clear Intraday Alerts</button>
+                        <div class="download-group">
+                            <span class="action-label">Download Intraday CSV:</span>
+                            <input type="date" id="dl-start-tab3-i" class="terminal-date">
+                            <input type="date" id="dl-end-tab3-i" class="terminal-date">
+                            <button class="terminal-btn btn-primary" onclick="downloadCSV('v1_scanner_alerts', 'dl-start-tab3-i', 'dl-end-tab3-i', 'INTRADAY')"><i class="fa-solid fa-download"></i> Download CSV</button>
+                        </div>
+                    </div>
+                    <div class="table-container">
+                        <table class="terminal-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Alert Time</th>
+                                    <th>Symbol</th>
+                                    <th>Timeframe</th>
+                                    <th>Direction</th>
+                                    <th>Spot Price</th>
+                                    <th>Trigger Details</th>
+                                </tr>
+                            </thead>
+                            <tbody id="alerts-v1-intraday-body">
+                                <!-- Dynamic rows -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Sub-tab 2: Positional V1 -->
+                <div id="tab3-positional" class="sub-tab-content">
+                    <div class="action-bar-panel">
+                        <button class="terminal-btn btn-danger" onclick="clearLiveAlerts('v1_scanner_alerts', 'POSITIONAL', 'tab3')"><i class="fa-solid fa-trash"></i> Clear Positional Alerts</button>
+                        <div class="download-group">
+                            <span class="action-label">Download Positional CSV:</span>
+                            <input type="date" id="dl-start-tab3-p" class="terminal-date">
+                            <input type="date" id="dl-end-tab3-p" class="terminal-date">
+                            <button class="terminal-btn btn-primary" onclick="downloadCSV('v1_scanner_alerts', 'dl-start-tab3-p', 'dl-end-tab3-p', 'POSITIONAL')"><i class="fa-solid fa-download"></i> Download CSV</button>
+                        </div>
+                    </div>
+                    <div class="table-container">
+                        <table class="terminal-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Alert Time</th>
+                                    <th>Symbol</th>
+                                    <th>Timeframe</th>
+                                    <th>Direction</th>
+                                    <th>Spot Price</th>
+                                    <th>Trigger Details</th>
+                                </tr>
+                            </thead>
+                            <tbody id="alerts-v1-positional-body">
+                                <!-- Dynamic rows -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 4: Early Breakouts (V2) -->
+            <section id="tab4" class="tab-pane">
+                <div class="section-label">🔥 Live Early Breakout &amp; Breakdown Alerts (V2)</div>
+                <div class="sub-tabs-bar">
+                    <button class="sub-tab-btn active" data-subtab="tab4-intraday" onclick="switchSubTab(this, 'tab4-intraday')">🚀 Intraday Breakouts</button>
+                    <button class="sub-tab-btn" data-subtab="tab4-positional" onclick="switchSubTab(this, 'tab4-positional')">📅 Positional Breakouts</button>
+                </div>
+
+                <!-- Sub-tab 1: Intraday V2 -->
+                <div id="tab4-intraday" class="sub-tab-content active">
+                    <div class="action-bar-panel">
+                        <button class="terminal-btn btn-danger" onclick="clearLiveAlerts('v2_scanner_alerts', 'INTRADAY', 'tab4')"><i class="fa-solid fa-trash"></i> Clear Intraday Alerts</button>
+                        <div class="download-group">
+                            <span class="action-label">Download Intraday CSV:</span>
+                            <input type="date" id="dl-start-tab4-i" class="terminal-date">
+                            <input type="date" id="dl-end-tab4-i" class="terminal-date">
+                            <button class="terminal-btn btn-primary" onclick="downloadCSV('v2_scanner_alerts', 'dl-start-tab4-i', 'dl-end-tab4-i', 'INTRADAY')"><i class="fa-solid fa-download"></i> Download CSV</button>
+                        </div>
+                    </div>
+                    <div class="table-container">
+                        <table class="terminal-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Alert Time</th>
+                                    <th>Symbol</th>
+                                    <th>Timeframe</th>
+                                    <th>Direction</th>
+                                    <th>Spot Price</th>
+                                    <th>Trigger Details</th>
+                                </tr>
+                            </thead>
+                            <tbody id="alerts-v2-intraday-body">
+                                <!-- Dynamic rows -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Sub-tab 2: Positional V2 -->
+                <div id="tab4-positional" class="sub-tab-content">
+                    <div class="action-bar-panel">
+                        <button class="terminal-btn btn-danger" onclick="clearLiveAlerts('v2_scanner_alerts', 'POSITIONAL', 'tab4')"><i class="fa-solid fa-trash"></i> Clear Positional Alerts</button>
+                        <div class="download-group">
+                            <span class="action-label">Download Positional CSV:</span>
+                            <input type="date" id="dl-start-tab4-p" class="terminal-date">
+                            <input type="date" id="dl-end-tab4-p" class="terminal-date">
+                            <button class="terminal-btn btn-primary" onclick="downloadCSV('v2_scanner_alerts', 'dl-start-tab4-p', 'dl-end-tab4-p', 'POSITIONAL')"><i class="fa-solid fa-download"></i> Download CSV</button>
+                        </div>
+                    </div>
+                    <div class="table-container">
+                        <table class="terminal-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Alert Time</th>
+                                    <th>Symbol</th>
+                                    <th>Timeframe</th>
+                                    <th>Direction</th>
+                                    <th>Spot Price</th>
+                                    <th>Trigger Details</th>
+                                </tr>
+                            </thead>
+                            <tbody id="alerts-v2-positional-body">
+                                <!-- Dynamic rows -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 5: Frozen Retest V1 -->
+            <section id="tab5" class="tab-pane">
+                <div class="section-label">🧊 Frozen Breakout-Retest Scanner V1</div>
+                <div class="frozen-monitor-banner" id="frozen-freshness-banner">
+                    Loading data status...
+                </div>
+                
+                <div class="stats-strip frozen-stats-strip" id="frozen-metrics-strip">
+                    <!-- Dynamic metrics standard bootstrap -->
+                </div>
+
+                <div class="sub-tabs-bar">
+                    <button class="sub-tab-btn active" onclick="switchSubTab(this, 'frozen-tab1')">🟢 New Signals</button>
+                    <button class="sub-tab-btn" onclick="switchSubTab(this, 'frozen-tab2')">⏳ Current States</button>
+                    <button class="sub-tab-btn" onclick="switchSubTab(this, 'frozen-tab3')">📡 All Forward Signals</button>
+                    <button class="sub-tab-btn" onclick="switchSubTab(this, 'frozen-tab4')">🧾 Paper Trades</button>
+                    <button class="sub-tab-btn" onclick="switchSubTab(this, 'frozen-tab5')">🗂 Event Log</button>
+                </div>
+
+                <div id="frozen-tab1" class="sub-tab-content active">
+                    <div class="section-label">New signals from the latest frozen-scanner run</div>
+                    <div class="table-container">
+                        <table class="terminal-table">
+                            <thead>
+                                <tr>
+                                    <th>Event Time</th>
+                                    <th>Symbol</th>
+                                    <th>Side</th>
+                                    <th>Retest Price</th>
+                                    <th>Pullback Volume Ratio</th>
+                                    <th>Target Price</th>
+                                    <th>Stop Price</th>
+                                    <th>Signal ID</th>
+                                </tr>
+                            </thead>
+                            <tbody id="frozen-new-signals-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div id="frozen-tab2" class="sub-tab-content">
+                    <div class="section-label">Stocks currently progressing through the frozen state machine</div>
+                    <div class="table-container">
+                        <table class="terminal-table">
+                            <thead>
+                                <tr>
+                                    <th>Symbol</th>
+                                    <th>Stage</th>
+                                    <th>Res. Level</th>
+                                    <th>S1 Time</th>
+                                    <th>S1 Price</th>
+                                    <th>S2 Time</th>
+                                    <th>S2 Price</th>
+                                    <th>S3 Time</th>
+                                    <th>S3 Price</th>
+                                    <th>Volume Ratio</th>
+                                    <th>Target</th>
+                                    <th>Stop</th>
+                                </tr>
+                            </thead>
+                            <tbody id="frozen-states-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div id="frozen-tab3" class="sub-tab-content">
+                    <div class="section-label">All forward signals since the frozen start date</div>
+                    <div class="table-container">
+                        <table class="terminal-table">
+                            <thead>
+                                <tr>
+                                    <th>Event Time</th>
+                                    <th>Symbol</th>
+                                    <th>Side</th>
+                                    <th>Retest Price</th>
+                                    <th>Volume Ratio</th>
+                                    <th>Target</th>
+                                    <th>Stop</th>
+                                    <th>Signal ID</th>
+                                </tr>
+                            </thead>
+                            <tbody id="frozen-forward-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div id="frozen-tab4" class="sub-tab-content">
+                    <div class="section-label">Hypothetical paper entries and exits only</div>
+                    <div class="table-container">
+                        <table class="terminal-table">
+                            <thead>
+                                <tr>
+                                    <th>Event Time</th>
+                                    <th>Symbol</th>
+                                    <th>Event Type</th>
+                                    <th>Side</th>
+                                    <th>Entry Price</th>
+                                    <th>Exit Price</th>
+                                    <th>Target Price</th>
+                                    <th>Stop Price</th>
+                                    <th>Exit Reason</th>
+                                    <th>PnL (Bps)</th>
+                                </tr>
+                            </thead>
+                            <tbody id="frozen-trades-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div id="frozen-tab5" class="sub-tab-content">
+                    <div class="section-label">Complete frozen-scanner state/event history</div>
+                    <div class="table-container">
+                        <table class="terminal-table">
+                            <thead>
+                                <tr>
+                                    <th>Event Time</th>
+                                    <th>Symbol</th>
+                                    <th>Event Type</th>
+                                    <th>Price</th>
+                                    <th>Reason</th>
+                                    <th>Res. Level</th>
+                                    <th>Volume Ratio</th>
+                                    <th>PnL (Bps)</th>
+                                    <th>Signal ID</th>
+                                </tr>
+                            </thead>
+                            <tbody id="frozen-events-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Live Toast Container (Premium browser alerts without reloads) -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <!-- Custom Frontend Logic -->
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
