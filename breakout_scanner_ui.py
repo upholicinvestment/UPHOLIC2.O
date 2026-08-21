@@ -60,13 +60,63 @@ st.html("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
-/* ── Global reset ── */
+/* ── Global reset & Anti-Flicker ── */
 html, body, [class*="css"] {
     font-family: 'Inter', sans-serif !important;
 }
 .stApp {
     background: #060b14 !important;
 }
+
+/* ── Prevent Streamlit Rerun Blinking & Dimming ── */
+.stApp, 
+.main,
+.main .block-container,
+[data-testid="stAppViewContainer"],
+[data-testid="stMainBlockContainer"],
+[data-testid="stVerticalBlock"],
+[data-testid="stHorizontalBlock"],
+[data-testid="stDataFrame"],
+div[data-testid="stAppViewBlockContainer"],
+div[data-testid="stElementContainer"] {
+    transition: none !important;
+    animation: none !important;
+    opacity: 1 !important;
+}
+
+/* Override Streamlit running state dimming */
+[data-test-script-state="running"] [data-testid="stAppViewContainer"],
+[data-test-script-state="running"] .main,
+[data-test-script-state="running"] .block-container,
+[data-test-script-state="running"] [data-testid="stVerticalBlock"] > div,
+[data-test-script-state="running"] [data-testid="stElementContainer"] {
+    opacity: 1 !important;
+    filter: none !important;
+}
+
+/* Hide top-right running spinner/widget flicker */
+[data-testid="stStatusWidget"],
+div[data-testid="stToolbar"] [data-testid="stStatusWidget"],
+.stStatusWidget {
+    display: none !important;
+    visibility: hidden !important;
+}
+
+/* Hide autorefresh iframe completely so it creates zero layout shift or blink */
+iframe[title="streamlit_autorefresh.st_autorefresh"],
+iframe[srcdoc*="autorefresh"],
+iframe {
+    position: fixed !important;
+    top: -9999px !important;
+    left: -9999px !important;
+    width: 0px !important;
+    height: 0px !important;
+    border: none !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+}
+
 .main .block-container {
     padding: 1.5rem 2.5rem 3rem !important;
     max-width: 1600px !important;
@@ -399,7 +449,7 @@ def get_db():
     return pymongo.MongoClient(uri)[db_name]
 
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=5)
 def load_data():
     try:
         col = get_db()["latest_snapshot"]
@@ -440,7 +490,7 @@ def load_data():
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=5)
 def load_stock_history(symbol):
     try:
         col = get_db()["snapshots"]
@@ -469,7 +519,7 @@ def load_stock_history(symbol):
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=5)
 def load_all_stocks_history_today():
     try:
         col = get_db()["snapshots"]
@@ -744,7 +794,7 @@ def parse_db_options_df(doc):
     return pd.DataFrame(rows)
 
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=5)
 def load_breakout_signals():
     try:
         col = get_db()["latest_snapshot"]
