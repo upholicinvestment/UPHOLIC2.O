@@ -35,9 +35,8 @@ def is_market_open():
     
     return market_open <= now_ist <= market_close
 
-# Autorefresh the dashboard every 5 seconds to load instant updates without manual refresh (only during market hours)
-if is_market_open():
-    st_autorefresh(interval=5000, key="alerts_log_refresher")
+# Note: We use isolated @st.fragment(run_every="5s") for real-time live data updates
+# to completely eliminate whole-page reload blinking, flashing, and shadows!
 
 # Initialize Session State for Alert Log
 if "live_alerts_log" not in st.session_state:
@@ -60,7 +59,7 @@ st.html("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
-/* ── Global reset & Anti-Flicker ── */
+/* ── Global reset & Zero Shadow Anti-Flicker ── */
 html, body, [class*="css"] {
     font-family: 'Inter', sans-serif !important;
 }
@@ -68,53 +67,46 @@ html, body, [class*="css"] {
     background: #060b14 !important;
 }
 
-/* ── Prevent Streamlit Rerun Blinking & Dimming ── */
-.stApp, 
-.main,
-.main .block-container,
+/* ── Prevent Streamlit Dimming, Blinking, Shadows & Graying out ── */
+[data-test-script-state="running"] *,
+[data-test-script-state="running"],
 [data-testid="stAppViewContainer"],
+[data-testid="stAppViewBlockContainer"],
 [data-testid="stMainBlockContainer"],
 [data-testid="stVerticalBlock"],
 [data-testid="stHorizontalBlock"],
 [data-testid="stDataFrame"],
+div[data-testid="stElementContainer"],
 div[data-testid="stAppViewBlockContainer"],
-div[data-testid="stElementContainer"] {
-    transition: none !important;
-    animation: none !important;
-    opacity: 1 !important;
-}
-
-/* Override Streamlit running state dimming */
-[data-test-script-state="running"] [data-testid="stAppViewContainer"],
-[data-test-script-state="running"] .main,
-[data-test-script-state="running"] .block-container,
-[data-test-script-state="running"] [data-testid="stVerticalBlock"] > div,
-[data-test-script-state="running"] [data-testid="stElementContainer"] {
+.main,
+.stApp,
+.block-container {
     opacity: 1 !important;
     filter: none !important;
+    backdrop-filter: none !important;
+    transition: none !important;
+    animation: none !important;
+}
+
+/* Eliminate dark overlays / pseudo-element masks injected by Streamlit during runs */
+div[data-testid="stAppViewContainer"]::before,
+div[data-testid="stAppViewContainer"]::after,
+.stApp::before,
+.stApp::after,
+.main::before,
+.main::after {
+    display: none !important;
+    content: none !important;
+    background: transparent !important;
 }
 
 /* Hide top-right running spinner/widget flicker */
 [data-testid="stStatusWidget"],
+[data-testid="stDecoration"],
 div[data-testid="stToolbar"] [data-testid="stStatusWidget"],
 .stStatusWidget {
     display: none !important;
     visibility: hidden !important;
-}
-
-/* Hide autorefresh iframe completely so it creates zero layout shift or blink */
-iframe[title="streamlit_autorefresh.st_autorefresh"],
-iframe[srcdoc*="autorefresh"],
-iframe {
-    position: fixed !important;
-    top: -9999px !important;
-    left: -9999px !important;
-    width: 0px !important;
-    height: 0px !important;
-    border: none !important;
-    opacity: 0 !important;
-    visibility: hidden !important;
-    pointer-events: none !important;
 }
 
 .main .block-container {
@@ -1865,469 +1857,533 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏆 Volatility Leaderboard", "🎯 Bre
 
 # ─── TAB 1: Volatility Leaderboard ────────────────────────────────────────────
 with tab1:
-    # Stats strip
-    st.html("""<div class="section-label">Market Overview</div>""")
-    s1, s2, s3, s4 = st.columns(4)
-    def stat_box(col, num, lbl):
-        col.html(f"""
-        <div class="stat-box">
-          <div class="stat-num">{num}</div>
-          <div class="stat-lbl">{lbl}</div>
-        </div>""")
+    @st.fragment(run_every=5 if is_market_open() else None)
+    def render_tab1():
+        df = load_data()
+        total = len(df)
+        ts_str = df.iloc[0]["ts_ist"] if not df.empty and "ts_ist" in df.columns else "—"
+        avg_iv4 = round(df["iv4"].mean(), 2) if not df.empty else 0
+        high_iv4 = round(df["iv4"].max(), 2) if not df.empty else 0
 
-    stat_box(s1, total, "Total Stocks")
-    stat_box(s2, f"{high_iv4:.2f}%", "Highest IV4")
-    stat_box(s3, f"{avg_iv4:.2f}%", "Avg IV4")
-    stat_box(s4, len(df[df["iv4"] >= 30]) if not df.empty else 0, "High Volatility (≥30%)")
+        # Stats strip
+        st.html("""<div class="section-label">Market Overview</div>""")
+        s1, s2, s3, s4 = st.columns(4)
+        def stat_box(col, num, lbl):
+            col.html(f"""
+            <div class="stat-box">
+              <div class="stat-num">{num}</div>
+              <div class="stat-lbl">{lbl}</div>
+            </div>""")
 
-    st.html("<div style='margin-bottom:28px'></div>")
-
-    if df.empty:
-        st.warning("⚠️ No data yet in `latest_snapshot`. Start your backend and wait for the first 15-minute cycle to complete.")
-    else:
-        # Top 3 Podium
-        st.html("""<div class="section-label">🏆 Top Ranked Stocks by IV4</div>""")
-        medals = [("gold", "🥇", "1"), ("silver", "🥈", "2"), ("bronze", "🥉", "3")]
-        cols3 = st.columns(3)
-
-        for i, (cls, medal, num) in enumerate(medals):
-            if i >= len(df): continue
-            row = df.iloc[i]
-            sym = row["underlying_symbol"]
-            iv4 = row["iv4"]
-            spot = row["last_price"]
-            ce_iv = row.get("ce_iv_oi_weighted", 0)
-            pe_iv = row.get("pe_iv_oi_weighted", 0)
-            skew = row.get("iv_skew", 0)
-            expiry = row.get("expiry", "—")
-            with cols3[i]:
-                st.html(f"""
-                <div class="rank-card {cls}">
-                  <div class="rank-watermark">#{num}</div>
-                  <div class="rank-medal">{medal}</div>
-                  <div class="rank-symbol">{sym}</div>
-                  <div class="rank-iv4">{iv4:.2f}<span style="font-size:1rem;font-weight:500;color:#94a3b8">%</span></div>
-                  <div class="rank-sub">
-                    <div class="rank-pill">Spot <span>₹{spot:,.2f}</span></div>
-                    <div class="rank-pill">CE <span style="color:#60a5fa">{ce_iv:.2f}%</span></div>
-                    <div class="rank-pill">PE <span style="color:#f472b6">{pe_iv:.2f}%</span></div>
-                    <div class="rank-pill">Skew <span style="color:{'#f87171' if skew > 0 else '#34d399'}">{skew:+.3f}</span></div>
-                  </div>
-                  <div style="margin-top:12px;font-size:0.68rem;color:#334155">Expiry: {expiry}</div>
-                </div>
-                """)
+        stat_box(s1, total, "Total Stocks")
+        stat_box(s2, f"{high_iv4:.2f}%", "Highest IV4")
+        stat_box(s3, f"{avg_iv4:.2f}%", "Avg IV4")
+        stat_box(s4, len(df[df["iv4"] >= 30]) if not df.empty else 0, "High Volatility (≥30%)")
 
         st.html("<div style='margin-bottom:28px'></div>")
 
-        # Movers & Shakers
-        col_lbl, col_btn = st.columns([8, 2])
-        with col_lbl:
-            st.html("""<div class="section-label">⚡ Volatility Movers &amp; Shakers (15-Minute Change)</div>""")
-        with col_btn:
-            st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-            if st.button("See All ↗", key="see_all_movers_btn"):
-                st.session_state["current_page"] = "movers_all"
-                st.rerun()
+        if df.empty:
+            st.warning("⚠️ No data yet in `latest_snapshot`. Start your backend and wait for the first 15-minute cycle to complete.")
+        else:
+            # Top 3 Podium
+            st.html("""<div class="section-label">🏆 Top Ranked Stocks by IV4</div>""")
+            medals = [("gold", "🥇", "1"), ("silver", "🥈", "2"), ("bronze", "🥉", "3")]
+            cols3 = st.columns(3)
 
-        m_col_up, m_col_down = st.columns(2)
-        change_df = df[df["iv4_change_5m"] != 0].copy()
+            for i, (cls, medal, num) in enumerate(medals):
+                if i >= len(df): continue
+                row = df.iloc[i]
+                sym = row["underlying_symbol"]
+                iv4 = row["iv4"]
+                spot = row["last_price"]
+                ce_iv = row.get("ce_iv_oi_weighted", 0)
+                pe_iv = row.get("pe_iv_oi_weighted", 0)
+                skew = row.get("iv_skew", 0)
+                expiry = row.get("expiry", "—")
+                with cols3[i]:
+                    st.html(f"""
+                    <div class="rank-card {cls}">
+                      <div class="rank-watermark">#{num}</div>
+                      <div class="rank-medal">{medal}</div>
+                      <div class="rank-symbol">{sym}</div>
+                      <div class="rank-iv4">{iv4:.2f}<span style="font-size:1rem;font-weight:500;color:#94a3b8">%</span></div>
+                      <div class="rank-sub">
+                        <div class="rank-pill">Spot <span>₹{spot:,.2f}</span></div>
+                        <div class="rank-pill">CE <span style="color:#60a5fa">{ce_iv:.2f}%</span></div>
+                        <div class="rank-pill">PE <span style="color:#f472b6">{pe_iv:.2f}%</span></div>
+                        <div class="rank-pill">Skew <span style="color:{'#f87171' if skew > 0 else '#34d399'}">{skew:+.3f}</span></div>
+                      </div>
+                      <div style="margin-top:12px;font-size:0.68rem;color:#334155">Expiry: {expiry}</div>
+                    </div>
+                    """)
 
-        with m_col_up:
-            st.markdown("**🔥 Volatility Spikes (Top 5 Positive Changes)**")
-            spikes = pd.DataFrame()
-            if not change_df.empty:
-                spikes = change_df[change_df["iv4_change_5m"] > 0].sort_values("iv4_change_5m", ascending=False).head(5)
-            
-            rows_up = ""
-            if spikes.empty:
-                rows_up = "<tr><td colspan='4' style='text-align:center;color:#64748b;padding:20px;'>No spikes in last 15m (waiting for next cycle)</td></tr>"
-            else:
-                for _, r in spikes.iterrows():
-                    strike_info = "—"
-                    if isinstance(r.get("top_strike_iv_change_5m"), dict):
-                        ts = r["top_strike_iv_change_5m"]
-                        strike_info = f"<span class='ce-iv' style='font-weight:600'>{ts.get('strike')} {ts.get('side')}</span> ({ts.get('change'):+.2f}%)"
-                    
-                    rows_up += f"""
-                    <tr>
-                      <td style="text-align:left;font-weight:600;color:#e2e8f0">{r['underlying_symbol']}</td>
-                      <td>{r['iv4']:.2f}%</td>
-                      <td style="color:#34d399;font-weight:700">+{r['iv4_change_5m']:.2f}%</td>
-                      <td style="font-size:0.75rem;color:#94a3b8">{strike_info}</td>
-                    </tr>
-                    """
-                    
-            table_up_html = f"""
-            <div style="background:#0d1625;border:1px solid rgba(255,255,255,0.06);border-radius:12px;overflow:hidden;">
-              <table class="iv4-table">
-                <thead>
-                  <tr>
-                    <th style="text-align:left">Symbol</th>
-                    <th>IV4</th>
-                    <th>Change</th>
-                    <th>Top Strike Driver</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows_up}
-                </tbody>
-              </table>
-            </div>
-            """
-            st.html(table_up_html)
+            st.html("<div style='margin-bottom:28px'></div>")
 
-        with m_col_down:
-            st.markdown("**❄️ Volatility Crushes (Top 5 Negative Changes)**")
-            crushes = pd.DataFrame()
-            if not change_df.empty:
-                crushes = change_df[change_df["iv4_change_5m"] < 0].sort_values("iv4_change_5m", ascending=True).head(5)
-            
-            rows_down = ""
-            if crushes.empty:
-                rows_down = "<tr><td colspan='4' style='text-align:center;color:#64748b;padding:20px;'>No crushes in last 15m (waiting for next cycle)</td></tr>"
-            else:
-                for _, r in crushes.iterrows():
-                    strike_info = "—"
-                    if isinstance(r.get("top_strike_iv_change_5m"), dict):
-                        ts = r["top_strike_iv_change_5m"]
-                        strike_info = f"<span class='pe-iv' style='font-weight:600'>{ts.get('strike')} {ts.get('side')}</span> ({ts.get('change'):+.2f}%)"
-                    
-                    rows_down += f"""
-                    <tr>
-                      <td style="text-align:left;font-weight:600;color:#e2e8f0">{r['underlying_symbol']}</td>
-                      <td>{r['iv4']:.2f}%</td>
-                      <td style="color:#f87171;font-weight:700">{r['iv4_change_5m']:.2f}%</td>
-                      <td style="font-size:0.75rem;color:#94a3b8">{strike_info}</td>
-                    </tr>
-                    """
-                    
-            table_down_html = f"""
-            <div style="background:#0d1625;border:1px solid rgba(255,255,255,0.06);border-radius:12px;overflow:hidden;">
-              <table class="iv4-table">
-                <thead>
-                  <tr>
-                    <th style="text-align:left">Symbol</th>
-                    <th>IV4</th>
-                    <th>Change</th>
-                    <th>Top Strike Driver</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows_down}
-                </tbody>
-              </table>
-            </div>
-            """
-            st.html(table_down_html)
+            # Movers & Shakers
+            col_lbl, col_btn = st.columns([8, 2])
+            with col_lbl:
+                st.html("""<div class="section-label">⚡ Volatility Movers &amp; Shakers (15-Minute Change)</div>""")
+            with col_btn:
+                st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+                if st.button("See All ↗", key="see_all_movers_btn"):
+                    st.session_state["current_page"] = "movers_all"
+                    st.rerun()
 
-        st.html("<div style='margin-bottom:28px'></div>")
+            m_col_up, m_col_down = st.columns(2)
+            change_df = df[df["iv4_change_5m"] != 0].copy()
 
-        # Charts
-        st.html("""<div class="section-label">📊 Volatility Analytics</div>""")
-        cc1, cc2 = st.columns([3, 2])
-
-        with cc1:
-            top30 = df.head(30)
-            colors = [iv4_color(v) for v in top30["iv4"]]
-            fig = go.Figure(go.Bar(
-                x=top30["underlying_symbol"],
-                y=top30["iv4"],
-                marker_color=colors,
-                marker_line_width=0,
-                text=[f"{v:.1f}%" for v in top30["iv4"]],
-                textposition="outside",
-                textfont=dict(size=9, color="#94a3b8"),
-            ))
-            fig.update_layout(
-                title=dict(text="Top 30 Stocks — Overall IV4", font=dict(color="#94a3b8", size=13), x=0),
-                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(13,22,37,1)",
-                margin=dict(l=10, r=10, t=40, b=80),
-                xaxis=dict(tickangle=-45, tickfont=dict(size=9, color="#64748b", family="JetBrains Mono"),
-                           gridcolor="rgba(255,255,255,0.04)", showgrid=False),
-                yaxis=dict(tickfont=dict(size=10, color="#64748b"), gridcolor="rgba(255,255,255,0.04)",
-                           ticksuffix="%"),
-                bargap=0.25, height=360,
-                font=dict(family="Inter"),
-            )
-            st.html('<div class="chart-card">')
-            st.plotly_chart(fig, width="stretch")
-            st.html('</div>')
-
-        with cc2:
-            plot_df = df[df["ce_iv_oi_weighted"] > 0].head(50)
-            fig2 = px.scatter(
-                plot_df,
-                x="ce_iv_oi_weighted", y="pe_iv_oi_weighted",
-                size="iv4", color="iv4",
-                hover_name="underlying_symbol",
-                color_continuous_scale="Plasma",
-                labels={"ce_iv_oi_weighted": "CE IV (%)", "pe_iv_oi_weighted": "PE IV (%)"},
-                size_max=30,
-            )
-            fig2.update_layout(
-                title=dict(text="CE IV vs PE IV Dispersion", font=dict(color="#94a3b8", size=13), x=0),
-                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(13,22,37,1)",
-                margin=dict(l=10, r=10, t=40, b=10),
-                xaxis=dict(tickfont=dict(size=10, color="#64748b"), gridcolor="rgba(255,255,255,0.04)",
-                           ticksuffix="%"),
-                yaxis=dict(tickfont=dict(size=10, color="#64748b"), gridcolor="rgba(255,255,255,0.04)",
-                           ticksuffix="%"),
-                coloraxis_colorbar=dict(tickfont=dict(color="#64748b"), title=dict(text="IV4%", font=dict(color="#64748b"))),
-                height=360, font=dict(family="Inter"),
-            )
-            st.html('<div class="chart-card">')
-            st.plotly_chart(fig2, width="stretch")
-            st.html('</div>')
-
-        # Intraday Trajectory Chart
-        st.html("""<div class="section-label">📈 Intraday IV4 Analytics (Today)</div>""")
-
-        symbols = sorted(df["underlying_symbol"].unique())
-        sel_stock = st.selectbox("SELECT STOCK FOR INTRADAY ANALYSIS", options=symbols)
-        
-        if sel_stock:
-            hist_df = load_stock_history(sel_stock)
-            if hist_df.empty:
-                st.info(f"No intraday history found for {sel_stock} today. Start your backend and wait for the first 15-minute cycle.")
-            else:
-                fig_line = go.Figure()
-                fig_line.add_trace(go.Scatter(
-                    x=hist_df["ts_ist"].apply(lambda x: x.split(" ")[1][:5] if len(x.split(" ")) > 1 else x),
-                    y=hist_df["iv4"],
-                    mode="lines+markers",
-                    name="Overall IV4",
-                    line=dict(color="#fbbf24", width=3),
-                    marker=dict(size=6)
-                ))
-                fig_line.add_trace(go.Scatter(
-                    x=hist_df["ts_ist"].apply(lambda x: x.split(" ")[1][:5] if len(x.split(" ")) > 1 else x),
-                    y=hist_df["ce_iv_oi_weighted"],
-                    mode="lines",
-                    name="Call IV (Weighted)",
-                    line=dict(color="#60a5fa", width=1.5, dash="dash")
-                ))
-                fig_line.add_trace(go.Scatter(
-                    x=hist_df["ts_ist"].apply(lambda x: x.split(" ")[1][:5] if len(x.split(" ")) > 1 else x),
-                    y=hist_df["pe_iv_oi_weighted"],
-                    mode="lines",
-                    name="Put IV (Weighted)",
-                    line=dict(color="#f472b6", width=1.5, dash="dash")
-                ))
+            with m_col_up:
+                st.markdown("**🔥 Volatility Spikes (Top 5 Positive Changes)**")
+                spikes = pd.DataFrame()
+                if not change_df.empty:
+                    spikes = change_df[change_df["iv4_change_5m"] > 0].sort_values("iv4_change_5m", ascending=False).head(5)
                 
-                fig_line.update_layout(
-                    title=dict(text=f"Today's IV4 Trajectory for {sel_stock}", font=dict(color="#94a3b8", size=14)),
+                rows_up = ""
+                if spikes.empty:
+                    rows_up = "<tr><td colspan='4' style='text-align:center;color:#64748b;padding:20px;'>No spikes in last 15m (waiting for next cycle)</td></tr>"
+                else:
+                    for _, r in spikes.iterrows():
+                        strike_info = "—"
+                        if isinstance(r.get("top_strike_iv_change_5m"), dict):
+                            ts = r["top_strike_iv_change_5m"]
+                            strike_info = f"<span class='ce-iv' style='font-weight:600'>{ts.get('strike')} {ts.get('side')}</span> ({ts.get('change'):+.2f}%)"
+                        
+                        rows_up += f"""
+                        <tr>
+                          <td style="text-align:left;font-weight:600;color:#e2e8f0">{r['underlying_symbol']}</td>
+                          <td>{r['iv4']:.2f}%</td>
+                          <td style="color:#34d399;font-weight:700">+{r['iv4_change_5m']:.2f}%</td>
+                          <td style="font-size:0.75rem;color:#94a3b8">{strike_info}</td>
+                        </tr>
+                        """
+                        
+                table_up_html = f"""
+                <div style="background:#0d1625;border:1px solid rgba(255,255,255,0.06);border-radius:12px;overflow:hidden;">
+                  <table class="iv4-table">
+                    <thead>
+                      <tr>
+                        <th style="text-align:left">Symbol</th>
+                        <th>IV4</th>
+                        <th>Change</th>
+                        <th>Top Strike Driver</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows_up}
+                    </tbody>
+                  </table>
+                </div>
+                """
+                st.html(table_up_html)
+
+            with m_col_down:
+                st.markdown("**❄️ Volatility Crushes (Top 5 Negative Changes)**")
+                crushes = pd.DataFrame()
+                if not change_df.empty:
+                    crushes = change_df[change_df["iv4_change_5m"] < 0].sort_values("iv4_change_5m", ascending=True).head(5)
+                
+                rows_down = ""
+                if crushes.empty:
+                    rows_down = "<tr><td colspan='4' style='text-align:center;color:#64748b;padding:20px;'>No crushes in last 15m (waiting for next cycle)</td></tr>"
+                else:
+                    for _, r in crushes.iterrows():
+                        strike_info = "—"
+                        if isinstance(r.get("top_strike_iv_change_5m"), dict):
+                            ts = r["top_strike_iv_change_5m"]
+                            strike_info = f"<span class='pe-iv' style='font-weight:600'>{ts.get('strike')} {ts.get('side')}</span> ({ts.get('change'):+.2f}%)"
+                        
+                        rows_down += f"""
+                        <tr>
+                          <td style="text-align:left;font-weight:600;color:#e2e8f0">{r['underlying_symbol']}</td>
+                          <td>{r['iv4']:.2f}%</td>
+                          <td style="color:#f87171;font-weight:700">{r['iv4_change_5m']:.2f}%</td>
+                          <td style="font-size:0.75rem;color:#94a3b8">{strike_info}</td>
+                        </tr>
+                        """
+                        
+                table_down_html = f"""
+                <div style="background:#0d1625;border:1px solid rgba(255,255,255,0.06);border-radius:12px;overflow:hidden;">
+                  <table class="iv4-table">
+                    <thead>
+                      <tr>
+                        <th style="text-align:left">Symbol</th>
+                        <th>IV4</th>
+                        <th>Change</th>
+                        <th>Top Strike Driver</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows_down}
+                    </tbody>
+                  </table>
+                </div>
+                """
+                st.html(table_down_html)
+
+            st.html("<div style='margin-bottom:28px'></div>")
+
+            # Charts
+            st.html("""<div class="section-label">📊 Volatility Analytics</div>""")
+            cc1, cc2 = st.columns([3, 2])
+
+            with cc1:
+                top30 = df.head(30)
+                colors = [iv4_color(v) for v in top30["iv4"]]
+                fig = go.Figure(go.Bar(
+                    x=top30["underlying_symbol"],
+                    y=top30["iv4"],
+                    marker_color=colors,
+                    marker_line_width=0,
+                    text=[f"{v:.1f}%" for v in top30["iv4"]],
+                    textposition="outside",
+                    textfont=dict(size=9, color="#94a3b8"),
+                ))
+                fig.update_layout(
+                    title=dict(text="Top 30 Stocks — Overall IV4", font=dict(color="#94a3b8", size=13), x=0),
                     plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(13,22,37,1)",
-                    margin=dict(l=20, r=20, t=50, b=50),
-                    xaxis=dict(
-                        tickfont=dict(size=10, color="#64748b", family="JetBrains Mono"),
-                        gridcolor="rgba(255,255,255,0.04)"
-                    ),
-                    yaxis=dict(
-                        tickfont=dict(size=10, color="#64748b"),
-                        gridcolor="rgba(255,255,255,0.04)",
-                        ticksuffix="%"
-                    ),
-                    legend=dict(
-                        font=dict(color="#94a3b8"),
-                        bgcolor="rgba(0,0,0,0)"
-                    ),
-                    height=380,
-                    font=dict(family="Inter")
+                    margin=dict(l=10, r=10, t=40, b=80),
+                    xaxis=dict(tickangle=-45, tickfont=dict(size=9, color="#64748b", family="JetBrains Mono"),
+                               gridcolor="rgba(255,255,255,0.04)", showgrid=False),
+                    yaxis=dict(tickfont=dict(size=10, color="#64748b"), gridcolor="rgba(255,255,255,0.04)",
+                               ticksuffix="%"),
+                    bargap=0.25, height=360,
+                    font=dict(family="Inter"),
                 )
                 st.html('<div class="chart-card">')
-                st.plotly_chart(fig_line, width="stretch")
+                st.plotly_chart(fig, width="stretch")
                 st.html('</div>')
 
-        st.html("<div style='margin-bottom:28px'></div>")
+            with cc2:
+                plot_df = df[df["ce_iv_oi_weighted"] > 0].head(50)
+                fig2 = px.scatter(
+                    plot_df,
+                    x="ce_iv_oi_weighted", y="pe_iv_oi_weighted",
+                    size="iv4", color="iv4",
+                    hover_name="underlying_symbol",
+                    color_continuous_scale="Plasma",
+                    labels={"ce_iv_oi_weighted": "CE IV (%)", "pe_iv_oi_weighted": "PE IV (%)"},
+                    size_max=30,
+                )
+                fig2.update_layout(
+                    title=dict(text="CE IV vs PE IV Dispersion", font=dict(color="#94a3b8", size=13), x=0),
+                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(13,22,37,1)",
+                    margin=dict(l=10, r=10, t=40, b=10),
+                    xaxis=dict(tickfont=dict(size=10, color="#64748b"), gridcolor="rgba(255,255,255,0.04)",
+                               ticksuffix="%"),
+                    yaxis=dict(tickfont=dict(size=10, color="#64748b"), gridcolor="rgba(255,255,255,0.04)",
+                               ticksuffix="%"),
+                    coloraxis_colorbar=dict(tickfont=dict(color="#64748b"), title=dict(text="IV4%", font=dict(color="#64748b"))),
+                    height=360, font=dict(family="Inter"),
+                )
+                st.html('<div class="chart-card">')
+                st.plotly_chart(fig2, width="stretch")
+                st.html('</div>')
 
-        # Filter bar
-        st.html('<div class="filter-bar">')
-        fc1, fc2, fc3 = st.columns([3, 1, 1])
-        with fc1:
-            search = st.text_input("SEARCH SYMBOL", placeholder="e.g. RELIANCE, HDFC, INFY…").strip().upper()
-        with fc2:
-            top_n = st.number_input("TOP N", min_value=5, max_value=250, value=50, step=5)
-        with fc3:
-            min_iv4 = st.number_input("MIN IV4 (%)", min_value=0.0, max_value=200.0, value=0.0, step=1.0)
-        st.html('</div>')
+            # Intraday Trajectory Chart
+            st.html("""<div class="section-label">📈 Intraday IV4 Analytics (Today)</div>""")
 
-        # Leaderboard Table
-        st.html("""<div class="section-label">📋 Full Leaderboard</div>""")
+            symbols = sorted(df["underlying_symbol"].unique())
+            sel_stock = st.selectbox("SELECT STOCK FOR INTRADAY ANALYSIS", options=symbols)
+            
+            if sel_stock:
+                hist_df = load_stock_history(sel_stock)
+                if hist_df.empty:
+                    st.info(f"No intraday history found for {sel_stock} today. Start your backend and wait for the first 15-minute cycle.")
+                else:
+                    fig_line = go.Figure()
+                    fig_line.add_trace(go.Scatter(
+                        x=hist_df["ts_ist"].apply(lambda x: x.split(" ")[1][:5] if len(x.split(" ")) > 1 else x),
+                        y=hist_df["iv4"],
+                        mode="lines+markers",
+                        name="Overall IV4",
+                        line=dict(color="#fbbf24", width=3),
+                        marker=dict(size=6)
+                    ))
+                    fig_line.add_trace(go.Scatter(
+                        x=hist_df["ts_ist"].apply(lambda x: x.split(" ")[1][:5] if len(x.split(" ")) > 1 else x),
+                        y=hist_df["ce_iv_oi_weighted"],
+                        mode="lines",
+                        name="Call IV (Weighted)",
+                        line=dict(color="#60a5fa", width=1.5, dash="dash")
+                    ))
+                    fig_line.add_trace(go.Scatter(
+                        x=hist_df["ts_ist"].apply(lambda x: x.split(" ")[1][:5] if len(x.split(" ")) > 1 else x),
+                        y=hist_df["pe_iv_oi_weighted"],
+                        mode="lines",
+                        name="Put IV (Weighted)",
+                        line=dict(color="#f472b6", width=1.5, dash="dash")
+                    ))
+                    
+                    fig_line.update_layout(
+                        title=dict(text=f"Today's IV4 Trajectory for {sel_stock}", font=dict(color="#94a3b8", size=14)),
+                        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(13,22,37,1)",
+                        margin=dict(l=20, r=20, t=50, b=50),
+                        xaxis=dict(
+                            tickfont=dict(size=10, color="#64748b", family="JetBrains Mono"),
+                            gridcolor="rgba(255,255,255,0.04)"
+                        ),
+                        yaxis=dict(
+                            tickfont=dict(size=10, color="#64748b"),
+                            gridcolor="rgba(255,255,255,0.04)",
+                            ticksuffix="%"
+                        ),
+                        legend=dict(
+                            font=dict(color="#94a3b8"),
+                            bgcolor="rgba(0,0,0,0)"
+                        ),
+                        height=380,
+                        font=dict(family="Inter")
+                    )
+                    st.html('<div class="chart-card">')
+                    st.plotly_chart(fig_line, width="stretch")
+                    st.html('</div>')
 
-        filtered = df.copy()
-        if search:
-            filtered = filtered[filtered["underlying_symbol"].str.contains(search, na=False)]
-        if min_iv4 > 0:
-            filtered = filtered[filtered["iv4"] >= min_iv4]
-        filtered = filtered.head(int(top_n))
+            st.html("<div style='margin-bottom:28px'></div>")
 
-        def rank_badge(r):
-            cls = "rank-top3" if r <= 3 else ("rank-top10" if r <= 10 else "rank-rest")
-            return f'<span class="rank-num {cls}">{r}</span>'
+            # Filter bar
+            st.html('<div class="filter-bar">')
+            fc1, fc2, fc3 = st.columns([3, 1, 1])
+            with fc1:
+                search = st.text_input("SEARCH SYMBOL", placeholder="e.g. RELIANCE, HDFC, INFY…").strip().upper()
+            with fc2:
+                top_n = st.number_input("TOP N", min_value=5, max_value=250, value=50, step=5)
+            with fc3:
+                min_iv4 = st.number_input("MIN IV4 (%)", min_value=0.0, max_value=200.0, value=0.0, step=1.0)
+            st.html('</div>')
 
-        def skew_cell(v):
-            cls = "skew-pos" if v > 0 else "skew-neg"
-            sign = "+" if v > 0 else ""
-            return f'<span class="{cls}">{sign}{v:.4f}</span>'
+            # Leaderboard Table
+            st.html("""<div class="section-label">📋 Full Leaderboard</div>""")
 
-        def iv4_cell(v):
-            color = iv4_color(v)
-            return f'<span style="color:{color};font-weight:700">{v:.2f}%</span>'
+            filtered = df.copy()
+            if search:
+                filtered = filtered[filtered["underlying_symbol"].str.contains(search, na=False)]
+            if min_iv4 > 0:
+                filtered = filtered[filtered["iv4"] >= min_iv4]
+            filtered = filtered.head(int(top_n))
 
-        rows_html = ""
-        for _, r in filtered.iterrows():
-            change_val = r.get("iv4_change_5m", 0)
-            change_class = "skew-pos" if change_val > 0 else ("skew-neg" if change_val < 0 else "")
-            change_sign = "+" if change_val > 0 else ""
-            change_text = f"<span class='{change_class}' style='font-weight:700'>{change_sign}{change_val:.2f}%</span>" if change_val != 0 else "<span style='color:#475569;'>—</span>"
+            def rank_badge(r):
+                cls = "rank-top3" if r <= 3 else ("rank-top10" if r <= 10 else "rank-rest")
+                return f'<span class="rank-num {cls}">{r}</span>'
 
-            strike_info = "<span style='color:#475569;'>—</span>"
-            ts = r.get("top_strike_iv_change_5m")
-            if isinstance(ts, dict):
-                side_class = "ce-iv" if ts.get("side") == "CE" else "pe-iv"
-                strike_info = f"<span class='{side_class}' style='font-weight:600'>{ts.get('strike')} {ts.get('side')}</span> <span style='font-size:0.75rem;color:#64748b'>({ts.get('change'):+.2f}%)</span>"
+            def skew_cell(v):
+                cls = "skew-pos" if v > 0 else "skew-neg"
+                sign = "+" if v > 0 else ""
+                return f'<span class="{cls}">{sign}{v:.4f}</span>'
 
-            rows_html += f"""
-            <tr>
-              <td>{rank_badge(int(r['rank']))}</td>
-              <td>{r['underlying_symbol']}</td>
-              <td>₹{r['last_price']:,.2f}</td>
-              <td>{iv4_cell(r['iv4'])}</td>
-              <td>{change_text}</td>
-              <td>{strike_info}</td>
-              <td><span class="ce-iv">{r['ce_iv_oi_weighted']:.2f}%</span></td>
-              <td><span class="pe-iv">{r['pe_iv_oi_weighted']:.2f}%</span></td>
-              <td>{skew_cell(r['iv_skew'])}</td>
-              <td style="color:#94a3b8">{r['iv_ratio']:.4f}</td>
-              <td style="color:#475569;font-size:0.7rem">{r.get('expiry','—')}</td>
-            </tr>"""
+            def iv4_cell(v):
+                color = iv4_color(v)
+                return f'<span style="color:{color};font-weight:700">{v:.2f}%</span>'
 
-        table_html = f"""
-        <div style="background:#0d1625;border:1px solid rgba(255,255,255,0.06);border-radius:14px;overflow:hidden;overflow-x:auto;">
-          <table class="iv4-table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Symbol</th>
-                <th>Spot</th>
-                <th>IV4 Overall</th>
-                <th>15m Change</th>
-                <th>Top Strike Driver</th>
-                <th>CE IV</th>
-                <th>PE IV</th>
-                <th>IV Skew</th>
-                <th>IV Ratio</th>
-                <th>Expiry</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows_html}
-            </tbody>
-          </table>
-        </div>
-        <div style="margin-top:10px;color:#334155;font-size:0.71rem;text-align:right">
-          Showing {len(filtered)} of {total} stocks &nbsp;·&nbsp; Last sync: {ts_str}
-        </div>
-        """
-        st.html(table_html)
+            rows_html = ""
+            for _, r in filtered.iterrows():
+                change_val = r.get("iv4_change_5m", 0)
+                change_class = "skew-pos" if change_val > 0 else ("skew-neg" if change_val < 0 else "")
+                change_sign = "+" if change_val > 0 else ""
+                change_text = f"<span class='{change_class}' style='font-weight:700'>{change_sign}{change_val:.2f}%</span>" if change_val != 0 else "<span style='color:#475569;'>—</span>"
+
+                strike_info = "<span style='color:#475569;'>—</span>"
+                ts = r.get("top_strike_iv_change_5m")
+                if isinstance(ts, dict):
+                    side_class = "ce-iv" if ts.get("side") == "CE" else "pe-iv"
+                    strike_info = f"<span class='{side_class}' style='font-weight:600'>{ts.get('strike')} {ts.get('side')}</span> <span style='font-size:0.75rem;color:#64748b'>({ts.get('change'):+.2f}%)</span>"
+
+                rows_html += f"""
+                <tr>
+                  <td>{rank_badge(int(r['rank']))}</td>
+                  <td>{r['underlying_symbol']}</td>
+                  <td>₹{r['last_price']:,.2f}</td>
+                  <td>{iv4_cell(r['iv4'])}</td>
+                  <td>{change_text}</td>
+                  <td>{strike_info}</td>
+                  <td><span class="ce-iv">{r['ce_iv_oi_weighted']:.2f}%</span></td>
+                  <td><span class="pe-iv">{r['pe_iv_oi_weighted']:.2f}%</span></td>
+                  <td>{skew_cell(r['iv_skew'])}</td>
+                  <td style="color:#94a3b8">{r['iv_ratio']:.4f}</td>
+                  <td style="color:#475569;font-size:0.7rem">{r.get('expiry','—')}</td>
+                </tr>"""
+
+            table_html = f"""
+            <div style="background:#0d1625;border:1px solid rgba(255,255,255,0.06);border-radius:14px;overflow:hidden;overflow-x:auto;">
+              <table class="iv4-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Symbol</th>
+                    <th>Spot</th>
+                    <th>IV4 Overall</th>
+                    <th>15m Change</th>
+                    <th>Top Strike Driver</th>
+                    <th>CE IV</th>
+                    <th>PE IV</th>
+                    <th>IV Skew</th>
+                    <th>IV Ratio</th>
+                    <th>Expiry</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows_html}
+                </tbody>
+              </table>
+            </div>
+            <div style="margin-top:10px;color:#334155;font-size:0.71rem;text-align:right">
+              Showing {len(filtered)} of {total} stocks &nbsp;·&nbsp; Last sync: {ts_str}
+            </div>
+            """
+            st.html(table_html)
+    render_tab1()
 
 
 # ─── TAB 2: Breakout Scanner ──────────────────────────────────────────────────
 with tab2:
-    st.html("""<div class="section-label">🎯 IV Breakout Scanner (Algorithmic Signals)</div>""")
-    
-    render_breakout_scanner_action_bar()
-    st.html("<div style='margin-bottom:12px'></div>")
-    render_breakout_scanner_table(
-        st.session_state["live_breakout_scanner_alerts_log"],
-        "No algorithmic breakout alerts triggered yet today. Make sure your background scanner and ingestor are running."
-    )
+    @st.fragment(run_every=5 if is_market_open() else None)
+    def render_tab2():
+        db_breakout_scanner_alerts = load_live_breakout_scanner_alerts_today()
+        st.session_state["live_breakout_scanner_alerts_log"] = db_breakout_scanner_alerts
+        
+        st.html("""<div class="section-label">🎯 IV Breakout Scanner (Algorithmic Signals)</div>""")
+        render_breakout_scanner_action_bar()
+        st.html("<div style='margin-bottom:12px'></div>")
+        render_breakout_scanner_table(
+            st.session_state["live_breakout_scanner_alerts_log"],
+            "No algorithmic breakout alerts triggered yet today. Make sure your background scanner and ingestor are running."
+        )
+    render_tab2()
 
 
 # ─── TAB 3: Live Alerts Log ───────────────────────────────────────────────────
 with tab3:
-    st.html("""<div class="section-label">🔔 Live Breakout Crossing Alerts</div>""")
+    @st.fragment(run_every=5 if is_market_open() else None)
+    def render_tab3():
+        # Load live alerts from MongoDB (directly generated by backend stock-by-stock)
+        db_alerts = load_live_breakout_alerts_today()
+        for a in reversed(db_alerts):
+            alert_key = f"{a['symbol']}_{a['direction']}_{a['timestamp']}"
+            if alert_key not in st.session_state["toasted_alerts"]:
+                st.session_state["toasted_alerts"].add(alert_key)
+                alert_dt = None
+                try:
+                    t_clean = a['timestamp'].replace(' IST', '')
+                    if '.' in t_clean:
+                        alert_dt = datetime.strptime(t_clean, "%Y-%m-%d %H:%M:%S.%f")
+                    else:
+                        alert_dt = datetime.strptime(t_clean, "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    pass
+                    
+                if alert_dt and alert_dt > st.session_state["session_start_time"]:
+                    st.toast(f"🚨 {a['symbol']} {a['direction']} Breakout! {a['details']}", icon="🚨")
 
-    # ── Sub-tabs (no yesterday tab) ───────────────────────────────────────────
-    subtab1, subtab2 = st.tabs(["🚀 Intraday Breakouts", "📅 Positional Breakouts"])
+        st.session_state["live_alerts_log"] = db_alerts
 
-    with subtab1:
-        render_alert_action_bar(
-            collection_name="v1_scanner_alerts",
-            mode_filter="INTRADAY",
-            table_key="v1_intraday",
-            live_log_key="live_alerts_log",
-            toast_state_key="toasted_alerts"
-        )
-        st.html("<div style='margin-bottom:12px'></div>")
-        render_alerts_table(
-            st.session_state["live_alerts_log"],
-            "No intraday breakout alerts triggered yet today. Make sure your background scanner is running during market hours.",
-            table_key="v1_intraday",
-            collection_name="v1_scanner_alerts",
-            mode_filter="INTRADAY"
-        )
+        st.html("""<div class="section-label">🔔 Live Breakout Crossing Alerts</div>""")
 
-    with subtab2:
-        render_alert_action_bar(
-            collection_name="v1_scanner_alerts",
-            mode_filter="POSITIONAL",
-            table_key="v1_positional",
-            live_log_key="live_alerts_log",
-            toast_state_key="toasted_alerts"
-        )
-        st.html("<div style='margin-bottom:12px'></div>")
-        render_alerts_table(
-            st.session_state["live_alerts_log"],
-            "No positional breakout alerts triggered yet today. Positional alerts are evaluated on daily/weekly candles.",
-            table_key="v1_positional",
-            collection_name="v1_scanner_alerts",
-            mode_filter="POSITIONAL"
-        )
+        # ── Sub-tabs (no yesterday tab) ───────────────────────────────────────────
+        subtab1, subtab2 = st.tabs(["🚀 Intraday Breakouts", "📅 Positional Breakouts"])
+
+        with subtab1:
+            render_alert_action_bar(
+                collection_name="v1_scanner_alerts",
+                mode_filter="INTRADAY",
+                table_key="v1_intraday",
+                live_log_key="live_alerts_log",
+                toast_state_key="toasted_alerts"
+            )
+            st.html("<div style='margin-bottom:12px'></div>")
+            render_alerts_table(
+                st.session_state["live_alerts_log"],
+                "No intraday breakout alerts triggered yet today. Make sure your background scanner is running during market hours.",
+                table_key="v1_intraday",
+                collection_name="v1_scanner_alerts",
+                mode_filter="INTRADAY"
+            )
+
+        with subtab2:
+            render_alert_action_bar(
+                collection_name="v1_scanner_alerts",
+                mode_filter="POSITIONAL",
+                table_key="v1_positional",
+                live_log_key="live_alerts_log",
+                toast_state_key="toasted_alerts"
+            )
+            st.html("<div style='margin-bottom:12px'></div>")
+            render_alerts_table(
+                st.session_state["live_alerts_log"],
+                "No positional breakout alerts triggered yet today. Positional alerts are evaluated on daily/weekly candles.",
+                table_key="v1_positional",
+                collection_name="v1_scanner_alerts",
+                mode_filter="POSITIONAL"
+            )
+    render_tab3()
 
 
 # ─── TAB 4: Early Breakouts (V2) ──────────────────────────────────────────────
 with tab4:
-    st.html("""<div class="section-label">🔥 Live Early Breakout &amp; Breakdown Alerts (V2)</div>""")
+    @st.fragment(run_every=5 if is_market_open() else None)
+    def render_tab4():
+        db_v2_alerts = load_live_v2_alerts_today()
+        for a in reversed(db_v2_alerts):
+            alert_key = f"v2_{a['symbol']}_{a['direction']}_{a['timestamp']}"
+            if alert_key not in st.session_state["toasted_v2_alerts"]:
+                st.session_state["toasted_v2_alerts"].add(alert_key)
+                alert_dt = None
+                try:
+                    t_clean = a['timestamp'].replace(' IST', '')
+                    if '.' in t_clean:
+                        alert_dt = datetime.strptime(t_clean, "%Y-%m-%d %H:%M:%S.%f")
+                    else:
+                        alert_dt = datetime.strptime(t_clean, "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    pass
+                    
+                if alert_dt and alert_dt > st.session_state["session_start_time"]:
+                    st.toast(f"🔥 V2 Early Breakout: {a['symbol']} {a['direction']}! {a['details']}", icon="🔥")
 
-    # ── Sub-tabs (no yesterday tab) ───────────────────────────────────────────
-    v2_subtab1, v2_subtab2 = st.tabs(["🚀 Intraday Breakouts", "📅 Positional Breakouts"])
+        st.session_state["live_v2_alerts_log"] = db_v2_alerts
 
-    with v2_subtab1:
-        render_alert_action_bar(
-            collection_name="v2_scanner_alerts",
-            mode_filter="INTRADAY",
-            table_key="v2_intraday",
-            live_log_key="live_v2_alerts_log",
-            toast_state_key="toasted_v2_alerts"
-        )
-        st.html("<div style='margin-bottom:12px'></div>")
-        render_alerts_table(
-            st.session_state["live_v2_alerts_log"],
-            "No early intraday breakout alerts triggered yet today. Make sure your background scanner is running during market hours.",
-            table_key="v2_intraday",
-            collection_name="v2_scanner_alerts",
-            mode_filter="INTRADAY"
-        )
+        st.html("""<div class="section-label">🔥 Live Early Breakout &amp; Breakdown Alerts (V2)</div>""")
 
-    with v2_subtab2:
-        render_alert_action_bar(
-            collection_name="v2_scanner_alerts",
-            mode_filter="POSITIONAL",
-            table_key="v2_positional",
-            live_log_key="live_v2_alerts_log",
-            toast_state_key="toasted_v2_alerts"
-        )
-        st.html("<div style='margin-bottom:12px'></div>")
-        render_alerts_table(
-            st.session_state["live_v2_alerts_log"],
-            "No early positional breakout alerts triggered yet today. Positional alerts are evaluated on daily/weekly candles.",
-            table_key="v2_positional",
-            collection_name="v2_scanner_alerts",
-            mode_filter="POSITIONAL"
-        )
+        # ── Sub-tabs (no yesterday tab) ───────────────────────────────────────────
+        v2_subtab1, v2_subtab2 = st.tabs(["🚀 Intraday Breakouts", "📅 Positional Breakouts"])
+
+        with v2_subtab1:
+            render_alert_action_bar(
+                collection_name="v2_scanner_alerts",
+                mode_filter="INTRADAY",
+                table_key="v2_intraday",
+                live_log_key="live_v2_alerts_log",
+                toast_state_key="toasted_v2_alerts"
+            )
+            st.html("<div style='margin-bottom:12px'></div>")
+            render_alerts_table(
+                st.session_state["live_v2_alerts_log"],
+                "No early intraday breakout alerts triggered yet today. Make sure your background scanner is running during market hours.",
+                table_key="v2_intraday",
+                collection_name="v2_scanner_alerts",
+                mode_filter="INTRADAY"
+            )
+
+        with v2_subtab2:
+            render_alert_action_bar(
+                collection_name="v2_scanner_alerts",
+                mode_filter="POSITIONAL",
+                table_key="v2_positional",
+                live_log_key="live_v2_alerts_log",
+                toast_state_key="toasted_v2_alerts"
+            )
+            st.html("<div style='margin-bottom:12px'></div>")
+            render_alerts_table(
+                st.session_state["live_v2_alerts_log"],
+                "No early positional breakout alerts triggered yet today. Positional alerts are evaluated on daily/weekly candles.",
+                table_key="v2_positional",
+                collection_name="v2_scanner_alerts",
+                mode_filter="POSITIONAL"
+            )
+    render_tab4()
 
 # ─── TAB 5: Frozen Breakout-Retest Scanner V1 ─────────────────────────────────
 with tab5:
-    render_frozen_retest_page()
+    @st.fragment(run_every=5 if is_market_open() else None)
+    def render_tab5():
+        render_frozen_retest_page()
+    render_tab5()
 
