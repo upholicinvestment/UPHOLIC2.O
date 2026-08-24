@@ -680,17 +680,28 @@ function renderFrozenRetestSummary(data) {
     const banner = document.getElementById('frozen-freshness-banner');
     const stats = document.getElementById('frozen-metrics-strip');
     const s = data.summary || {};
-    
+
     if (Object.keys(s).length === 0) {
         banner.className = 'frozen-monitor-banner text-red';
         banner.innerText = '⚠️ Frozen Scanner output directory is empty or not yet initialized.';
         stats.innerHTML = '';
         return;
     }
-    
-    banner.className = 'frozen-monitor-banner';
-    banner.innerHTML = `📡 Frozen Scanner Active Status: &nbsp;<b>${s.is_running ? '🟢 RUNNING' : '🔴 CLOSED'}</b> &nbsp;·&nbsp; Last run: <b>${s.last_run_time_ist || '—'}</b> &nbsp;·&nbsp; Total runs today: <b>${s.total_runs_today || 0}</b>`;
-    
+
+    // scanner_summary.json exposes data freshness + scanner timestamps.
+    // Do not rely on non-existent fields such as is_running/last_run_time_ist/total_runs_today.
+    const dataStatus = String(s.data_status || 'UNKNOWN').toUpperCase();
+    const isFresh = dataStatus === 'FRESH';
+    const statusText = isFresh ? '🟢 FRESH / ACTIVE' : `🔴 ${dataStatus}`;
+    const lastRun = s.as_of_ist || '—';
+    const latestBucket = s.latest_completed_bucket_ist || '—';
+
+    banner.className = `frozen-monitor-banner${isFresh ? '' : ' text-red'}`;
+    banner.innerHTML =
+        `📡 Frozen Scanner Data Status: &nbsp;<b>${statusText}</b>` +
+        ` &nbsp;·&nbsp; Last successful scan: <b>${lastRun}</b>` +
+        ` &nbsp;·&nbsp; Latest completed 5m bucket: <b>${latestBucket}</b>`;
+
     stats.innerHTML = `
         <div class="stat-box">
             <div class="stat-num text-blue">${s.symbols_scanned || 0}</div>
@@ -705,29 +716,30 @@ function renderFrozenRetestSummary(data) {
             <div class="stat-lbl">New Signals (Latest Run)</div>
         </div>
         <div class="stat-box">
-            <div class="stat-num text-red">${s.paper_entries_today || 0}</div>
+            <div class="stat-num text-red">${s.paper_entries || 0}</div>
             <div class="stat-lbl">Paper Trades Executed</div>
         </div>
     `;
-    
+
     // Fill the 5 sub-tab tables
-    
+
     // Sub-tab 1: New signals
     const newBody = document.getElementById('frozen-new-signals-body');
     newBody.innerHTML = '';
-    if (data.new_signals.length === 0) {
+    if (!Array.isArray(data.new_signals) || data.new_signals.length === 0) {
         newBody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text-muted)">No new signals generated in the last scanner cycle.</td></tr>`;
     } else {
         data.new_signals.forEach(r => {
+            const sideClass = r.side === 'BUY' ? 'badge-green' : 'badge-red';
             newBody.innerHTML += `
                 <tr>
-                    <td class="font-mono">${r.event_time || ''}</td>
+                    <td class="font-mono">${r.event_time_ist || ''}</td>
                     <td class="font-bold text-accent">${r.symbol || ''}</td>
-                    <td><span class="badge ${r.side === 'LONG' ? 'badge-green' : 'badge-red'}">${r.side || ''}</span></td>
-                    <td class="font-mono">${(r.retest_price || 0).toFixed(2)}</td>
-                    <td class="font-mono">${(r.pullback_volume_ratio || 0).toFixed(2)}</td>
-                    <td class="font-mono">${(r.target_price || 0).toFixed(2)}</td>
-                    <td class="font-mono">${(r.stop_price || 0).toFixed(2)}</td>
+                    <td><span class="badge ${sideClass}">${r.side || ''}</span></td>
+                    <td class="font-mono">${Number.isFinite(Number(r.retest_price)) ? Number(r.retest_price).toFixed(2) : '—'}</td>
+                    <td class="font-mono">${Number.isFinite(Number(r.pullback_volume_ratio)) ? Number(r.pullback_volume_ratio).toFixed(2) : '—'}</td>
+                    <td class="font-mono">${Number.isFinite(Number(r.target_price)) ? Number(r.target_price).toFixed(2) : '—'}</td>
+                    <td class="font-mono">${Number.isFinite(Number(r.stop_price)) ? Number(r.stop_price).toFixed(2) : '—'}</td>
                     <td class="font-mono" style="font-size:0.75rem">${r.signal_id || ''}</td>
                 </tr>
             `;
@@ -737,7 +749,7 @@ function renderFrozenRetestSummary(data) {
     // Sub-tab 2: Current States
     const statesBody = document.getElementById('frozen-states-body');
     statesBody.innerHTML = '';
-    if (data.states.length === 0) {
+    if (!Array.isArray(data.states) || data.states.length === 0) {
         statesBody.innerHTML = `<tr><td colspan="12" style="text-align:center;color:var(--text-muted)">No active states currently in progress.</td></tr>`;
     } else {
         data.states.forEach(r => {
@@ -745,16 +757,16 @@ function renderFrozenRetestSummary(data) {
                 <tr>
                     <td class="font-bold text-accent">${r.symbol || ''}</td>
                     <td><span class="badge badge-purple">${r.stage || ''}</span></td>
-                    <td class="font-mono">${(r.resistance_level || 0).toFixed(2)}</td>
-                    <td class="font-mono" style="font-size:0.72rem">${r.stage1_entry_time || '—'}</td>
-                    <td class="font-mono">${r.stage1_entry_price ? r.stage1_entry_price.toFixed(2) : '—'}</td>
-                    <td class="font-mono" style="font-size:0.72rem">${r.stage2_retest_time || '—'}</td>
-                    <td class="font-mono">${r.stage2_retest_price ? r.stage2_retest_price.toFixed(2) : '—'}</td>
-                    <td class="font-mono" style="font-size:0.72rem">${r.stage3_trigger_time || '—'}</td>
-                    <td class="font-mono">${r.stage3_trigger_price ? r.stage3_trigger_price.toFixed(2) : '—'}</td>
-                    <td class="font-mono">${(r.pullback_volume_ratio || 0).toFixed(2)}</td>
-                    <td class="font-mono">${(r.target_price || 0).toFixed(2)}</td>
-                    <td class="font-mono">${(r.stop_price || 0).toFixed(2)}</td>
+                    <td class="font-mono">${Number.isFinite(Number(r.resistance_level)) ? Number(r.resistance_level).toFixed(2) : '—'}</td>
+                    <td class="font-mono" style="font-size:0.72rem">${r.state1_time_ist || '—'}</td>
+                    <td class="font-mono">${Number.isFinite(Number(r.state1_price)) ? Number(r.state1_price).toFixed(2) : '—'}</td>
+                    <td class="font-mono" style="font-size:0.72rem">${r.state2_time_ist || '—'}</td>
+                    <td class="font-mono">${Number.isFinite(Number(r.state2_price)) ? Number(r.state2_price).toFixed(2) : '—'}</td>
+                    <td class="font-mono" style="font-size:0.72rem">${r.state3_time_ist || '—'}</td>
+                    <td class="font-mono">${Number.isFinite(Number(r.state3_price)) ? Number(r.state3_price).toFixed(2) : '—'}</td>
+                    <td class="font-mono">${Number.isFinite(Number(r.pullback_volume_ratio)) ? Number(r.pullback_volume_ratio).toFixed(2) : '—'}</td>
+                    <td class="font-mono">${Number.isFinite(Number(r.target_price)) ? Number(r.target_price).toFixed(2) : '—'}</td>
+                    <td class="font-mono">${Number.isFinite(Number(r.stop_price)) ? Number(r.stop_price).toFixed(2) : '—'}</td>
                 </tr>
             `;
         });
@@ -763,19 +775,20 @@ function renderFrozenRetestSummary(data) {
     // Sub-tab 3: Forward Signals
     const forwardBody = document.getElementById('frozen-forward-body');
     forwardBody.innerHTML = '';
-    if (data.forward_signals.length === 0) {
+    if (!Array.isArray(data.forward_signals) || data.forward_signals.length === 0) {
         forwardBody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text-muted)">No forward signals recorded in the current session.</td></tr>`;
     } else {
         data.forward_signals.forEach(r => {
+            const sideClass = r.side === 'BUY' ? 'badge-green' : 'badge-red';
             forwardBody.innerHTML += `
                 <tr>
-                    <td class="font-mono">${r.event_time || ''}</td>
+                    <td class="font-mono">${r.event_time_ist || ''}</td>
                     <td class="font-bold text-accent">${r.symbol || ''}</td>
-                    <td><span class="badge ${r.side === 'LONG' ? 'badge-green' : 'badge-red'}">${r.side || ''}</span></td>
-                    <td class="font-mono">${(r.retest_price || 0).toFixed(2)}</td>
-                    <td class="font-mono">${(r.pullback_volume_ratio || 0).toFixed(2)}</td>
-                    <td class="font-mono">${(r.target_price || 0).toFixed(2)}</td>
-                    <td class="font-mono">${(r.stop_price || 0).toFixed(2)}</td>
+                    <td><span class="badge ${sideClass}">${r.side || ''}</span></td>
+                    <td class="font-mono">${Number.isFinite(Number(r.retest_price)) ? Number(r.retest_price).toFixed(2) : '—'}</td>
+                    <td class="font-mono">${Number.isFinite(Number(r.pullback_volume_ratio)) ? Number(r.pullback_volume_ratio).toFixed(2) : '—'}</td>
+                    <td class="font-mono">${Number.isFinite(Number(r.target_price)) ? Number(r.target_price).toFixed(2) : '—'}</td>
+                    <td class="font-mono">${Number.isFinite(Number(r.stop_price)) ? Number(r.stop_price).toFixed(2) : '—'}</td>
                     <td class="font-mono" style="font-size:0.75rem">${r.signal_id || ''}</td>
                 </tr>
             `;
@@ -785,22 +798,23 @@ function renderFrozenRetestSummary(data) {
     // Sub-tab 4: Paper Trades
     const tradesBody = document.getElementById('frozen-trades-body');
     tradesBody.innerHTML = '';
-    if (data.trades.length === 0) {
-        tradesBody.innerHTML = `<tr><td colspan="10" style="text-align:center;color:var(--text-muted)">No paper trades executed today.</td></tr>`;
+    if (!Array.isArray(data.trades) || data.trades.length === 0) {
+        tradesBody.innerHTML = `<tr><td colspan="10" style="text-align:center;color:var(--text-muted)">No paper-trade events recorded.</td></tr>`;
     } else {
         data.trades.forEach(r => {
+            const sideClass = r.side === 'BUY' ? 'badge-green' : 'badge-red';
             tradesBody.innerHTML += `
                 <tr>
-                    <td class="font-mono">${r.event_time || ''}</td>
+                    <td class="font-mono">${r.event_time_ist || ''}</td>
                     <td class="font-bold text-accent">${r.symbol || ''}</td>
                     <td><span class="badge badge-purple">${r.event_type || ''}</span></td>
-                    <td><span class="badge ${r.side === 'LONG' ? 'badge-green' : 'badge-red'}">${r.side || ''}</span></td>
-                    <td class="font-mono">${r.entry_price ? r.entry_price.toFixed(2) : '—'}</td>
-                    <td class="font-mono">${r.exit_price ? r.exit_price.toFixed(2) : '—'}</td>
-                    <td class="font-mono">${(r.target_price || 0).toFixed(2)}</td>
-                    <td class="font-mono">${(r.stop_price || 0).toFixed(2)}</td>
+                    <td><span class="badge ${sideClass}">${r.side || ''}</span></td>
+                    <td class="font-mono">${Number.isFinite(Number(r.entry_price)) ? Number(r.entry_price).toFixed(2) : '—'}</td>
+                    <td class="font-mono">${Number.isFinite(Number(r.exit_price)) ? Number(r.exit_price).toFixed(2) : '—'}</td>
+                    <td class="font-mono">${Number.isFinite(Number(r.target_price)) ? Number(r.target_price).toFixed(2) : '—'}</td>
+                    <td class="font-mono">${Number.isFinite(Number(r.stop_price)) ? Number(r.stop_price).toFixed(2) : '—'}</td>
                     <td>${r.exit_reason || '—'}</td>
-                    <td class="font-mono font-bold ${r.pnl_bps > 0 ? 'text-green' : (r.pnl_bps < 0 ? 'text-red' : '')}">${r.pnl_bps ? r.pnl_bps.toFixed(1) : '—'}</td>
+                    <td class="font-mono font-bold ${Number(r.pnl_bps) > 0 ? 'text-green' : (Number(r.pnl_bps) < 0 ? 'text-red' : '')}">${Number.isFinite(Number(r.pnl_bps)) ? Number(r.pnl_bps).toFixed(1) : '—'}</td>
                 </tr>
             `;
         });
@@ -809,20 +823,20 @@ function renderFrozenRetestSummary(data) {
     // Sub-tab 5: Event Log
     const eventsBody = document.getElementById('frozen-events-body');
     eventsBody.innerHTML = '';
-    if (data.events.length === 0) {
+    if (!Array.isArray(data.events) || data.events.length === 0) {
         eventsBody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-muted)">Event log is currently empty.</td></tr>`;
     } else {
         data.events.forEach(r => {
             eventsBody.innerHTML += `
                 <tr>
-                    <td class="font-mono">${r.event_time || ''}</td>
+                    <td class="font-mono">${r.event_time_ist || ''}</td>
                     <td class="font-bold text-accent">${r.symbol || ''}</td>
                     <td><span class="badge badge-blue">${r.event_type || ''}</span></td>
-                    <td class="font-mono">${r.price ? r.price.toFixed(2) : '—'}</td>
+                    <td class="font-mono">${Number.isFinite(Number(r.price)) ? Number(r.price).toFixed(2) : '—'}</td>
                     <td style="font-size:0.8rem">${r.reason || '—'}</td>
-                    <td class="font-mono">${r.resistance_level ? r.resistance_level.toFixed(2) : '—'}</td>
-                    <td class="font-mono">${r.pullback_volume_ratio ? r.pullback_volume_ratio.toFixed(2) : '—'}</td>
-                    <td class="font-mono font-bold ${r.pnl_bps > 0 ? 'text-green' : (r.pnl_bps < 0 ? 'text-red' : '')}">${r.pnl_bps ? r.pnl_bps.toFixed(1) : '—'}</td>
+                    <td class="font-mono">${Number.isFinite(Number(r.resistance_level)) ? Number(r.resistance_level).toFixed(2) : '—'}</td>
+                    <td class="font-mono">${Number.isFinite(Number(r.pullback_volume_ratio)) ? Number(r.pullback_volume_ratio).toFixed(2) : '—'}</td>
+                    <td class="font-mono font-bold ${Number(r.pnl_bps) > 0 ? 'text-green' : (Number(r.pnl_bps) < 0 ? 'text-red' : '')}">${Number.isFinite(Number(r.pnl_bps)) ? Number(r.pnl_bps).toFixed(1) : '—'}</td>
                     <td class="font-mono" style="font-size:0.75rem">${r.signal_id || '—'}</td>
                 </tr>
             `;
