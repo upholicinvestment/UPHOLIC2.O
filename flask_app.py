@@ -246,6 +246,24 @@ def _read_frozen_csv(path: Path) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame()
 
+
+def _frozen_records_json_safe(frame: pd.DataFrame) -> list:
+    """Convert a DataFrame to strict browser-safe JSON records.
+
+    pandas DataFrames may contain NaN/Infinity values after reading sparse CSVs.
+    JSON sent to browsers must use null for those values.
+    """
+    if frame is None or frame.empty:
+        return []
+
+    return json.loads(
+        frame.to_json(
+            orient="records",
+            date_format="iso",
+        )
+    )
+
+
 def load_frozen_retest_results():
     root = FROZEN_SCANNER_RESULTS_DIR
     summary = {}
@@ -394,14 +412,14 @@ def get_alerts_breakout():
 def get_frozen_summary():
     payload = load_frozen_retest_results()
     
-    # Process pandas dfs to dict
+    # Convert pandas DataFrames to strict browser-safe JSON records.
     out = {
         "summary": payload["summary"],
-        "new_signals": payload["new_signals"].to_dict(orient='records'),
-        "forward_signals": payload["forward_signals"].to_dict(orient='records'),
-        "states": payload["states"].to_dict(orient='records'),
-        "trades": payload["trades"].to_dict(orient='records'),
-        "events": payload["events"].to_dict(orient='records')
+        "new_signals": _frozen_records_json_safe(payload["new_signals"]),
+        "forward_signals": _frozen_records_json_safe(payload["forward_signals"]),
+        "states": _frozen_records_json_safe(payload["states"]),
+        "trades": _frozen_records_json_safe(payload["trades"]),
+        "events": _frozen_records_json_safe(payload["events"])
     }
     return jsonify(out)
 
