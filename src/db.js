@@ -52,6 +52,10 @@ async function ensureSchemaAndIndexes() {
     // 4. Ensure index on alerts: { timestamp: -1 }
     console.log('[DB] Ensuring index on "alerts" (timestamp: -1)...');
     await db.collection('alerts').createIndex({ timestamp: -1 });
+
+    // 5. Ensure index on poi_scanner_alerts: { timestamp: -1, ts_ist: 1 }
+    await db.collection('poi_scanner_alerts').createIndex({ timestamp: -1 });
+    await db.collection('poi_scanner_alerts').createIndex({ ts_ist: 1 });
     
     console.log('[DB] Database schema and indexes are verified and ready.');
   } catch (error) {
@@ -159,9 +163,9 @@ async function checkAndLogPoiAlert(database, snapshotDoc) {
     const symbol = snapshotDoc.symbol;
     const nowMs = new Date(snapshotDoc.fetched_at || Date.now()).getTime();
 
-    // 30-minute cooldown per symbol to ensure top-quality alerts (~15-25/day)
+    // 10-minute cooldown per symbol for active intraday tracking
     const lastAlertTime = poiAlertCooldowns.get(symbol) || 0;
-    if (nowMs - lastAlertTime < 30 * 60 * 1000) {
+    if (nowMs - lastAlertTime < 10 * 60 * 1000) {
       return;
     }
 
@@ -177,8 +181,9 @@ async function checkAndLogPoiAlert(database, snapshotDoc) {
     const prevDoc = prevSnap[0];
 
     const prevTimeMs = new Date(prevDoc.fetched_at || 0).getTime();
-    // Must be within continuous intraday trading (gap <= 10 mins), ignoring overnight gaps
-    if (nowMs - prevTimeMs > 10 * 60 * 1000 || nowMs - prevTimeMs < 60 * 1000) {
+    // Must be within continuous intraday trading session (between 15s and 25 mins), ignoring overnight gaps
+    const timeDiffMs = nowMs - prevTimeMs;
+    if (timeDiffMs > 25 * 60 * 1000 || timeDiffMs < 15 * 1000) {
       return;
     }
 
@@ -192,6 +197,15 @@ async function checkAndLogPoiAlert(database, snapshotDoc) {
     const currentOptions = Array.isArray(snapshotDoc.options) ? snapshotDoc.options : [];
     const prevOptions = Array.isArray(prevDoc.options) ? prevDoc.options : [];
 
+    // Map previous options by strike+type for accurate intraday OI delta
+    const prevOiMap = new Map();
+    let prevTotalOi = 0;
+    for (const opt of prevOptions) {
+      const oi = Number(opt.oi || 0);
+      prevTotalOi += oi;
+      prevOiMap.set(`${opt.strike}_${opt.type}`, oi);
+    }
+
     let currentTotalOi = 0;
     let callOi = 0;
     let putOi = 0;
@@ -200,36 +214,31 @@ async function checkAndLogPoiAlert(database, snapshotDoc) {
 
     for (const opt of currentOptions) {
       const oi = Number(opt.oi || 0);
-      const pOi = Number(opt.previous_oi || 0);
       currentTotalOi += oi;
       if (opt.type === 'CE') callOi += oi;
       else putOi += oi;
 
-      const diff = oi - pOi;
+      const key = `${opt.strike}_${opt.type}`;
+      const prevStrikeOi = prevOiMap.has(key) ? prevOiMap.get(key) : Number(opt.previous_oi || 0);
+      const diff = oi - prevStrikeOi;
       if (Math.abs(diff) > Math.abs(maxStrikeDiff)) {
         maxStrikeDiff = diff;
         topStrike = `${opt.strike} ${opt.type} (${diff > 0 ? '+' : ''}${Math.round(diff)})`;
       }
     }
 
-    let prevTotalOi = 0;
-    for (const opt of prevOptions) {
-      prevTotalOi += Number(opt.oi || 0);
-    }
-
-    if (prevTotalOi <= 0) return;
+    if (prevTotalOi <= 0) prevTotalOi = currentTotalOi;
 
     const oiChange = currentTotalOi - prevTotalOi;
-    const oiChangePct = (oiChange / prevTotalOi) * 100;
+    const oiChangePct = prevTotalOi > 0 ? (oiChange / prevTotalOi) * 100 : 0;
 
-    // Strict Institutional Quality Filters:
-    // 1. Min 0.60% price momentum in 3-minute candle
-    // 2. Min 1.00% OI surge/drop
-    // 3. Min 40,000 contracts absolute Total OI change
-    // 4. Min 15,000 contracts on the dominant driver strike
-    const isPriceSignificant = Math.abs(priceChangePct) >= 0.60;
-    const isOiSignificant = Math.abs(oiChangePct) >= 1.00 && Math.abs(oiChange) >= 40000;
-    const isStrikeSignificant = Math.abs(maxStrikeDiff) >= 15000;
+    // Calibrated Momentum & Institutional Filters:
+    // 1. Min 0.25% price movement between cycles (or >= 0.50% intraday)
+    // 2. Min 0.40% OI change OR absolute contracts shift >= 5,000
+    // 3. Min 2,000 contracts on dominant driver strike (or price move >= 0.5%)
+    const isPriceSignificant = Math.abs(priceChangePct) >= 0.25;
+    const isOiSignificant = Math.abs(oiChangePct) >= 0.40 || Math.abs(oiChange) >= 5000;
+    const isStrikeSignificant = Math.abs(maxStrikeDiff) >= 2000 || Math.abs(priceChangePct) >= 0.50;
 
     if (!isPriceSignificant || !isOiSignificant || !isStrikeSignificant) {
       return;
