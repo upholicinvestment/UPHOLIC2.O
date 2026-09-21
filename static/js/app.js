@@ -85,6 +85,8 @@ function fetchActiveTabData() {
         fetchV2AlertsData();
     } else if (activeTab === 'tab5') {
         fetchFrozenRetestData();
+    } else if (activeTab === 'tab6') {
+        fetchPriceOiScannerData();
     }
 }
 
@@ -96,8 +98,42 @@ function setupFilters() {
     document.getElementById('leaderboard-min-iv').addEventListener('input', fetchLeaderboardData);
     
     // Tab 2 filters
-    document.getElementById('breakout-filter-sig').addEventListener('change', renderBreakoutScannerRows);
-    document.getElementById('breakout-sort-by').addEventListener('change', renderBreakoutScannerRows);
+    document.getElementById('breakout-filter-sig')?.addEventListener('change', () => {
+        breakoutCurrentPage = 1;
+        renderBreakoutScannerRows();
+    });
+    document.getElementById('breakout-sort-by')?.addEventListener('change', () => {
+        breakoutCurrentPage = 1;
+        renderBreakoutScannerRows();
+    });
+    
+    // Tab 6 filters
+    const categorySelect = document.getElementById('poi-category-filter');
+    const minOiInput = document.getElementById('poi-min-oi-input');
+    const refreshBtn = document.getElementById('poi-refresh-btn');
+    const prevDayBtn = document.getElementById('poi-prev-day-btn');
+    const nextDayBtn = document.getElementById('poi-next-day-btn');
+    
+    // Instantaneous in-memory filtering (0ms lag)
+    if (categorySelect) categorySelect.addEventListener('change', renderPoiScannerRows);
+    if (minOiInput) minOiInput.addEventListener('input', renderPoiScannerRows);
+    
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', () => {
+            const icon = refreshBtn.querySelector('i');
+            if (icon) icon.classList.add('fa-spin');
+            fetchPriceOiScannerData().finally(() => {
+                setTimeout(() => {
+                    if (icon) icon.classList.remove('fa-spin');
+                }, 400);
+            });
+        });
+    }
+
+    if (prevDayBtn) prevDayBtn.addEventListener('click', () => navigatePoiDay(1));
+    if (nextDayBtn) nextDayBtn.addEventListener('click', () => navigatePoiDay(-1));
+    
+    updatePoiDateNavigatorUI();
     
     // Selected analysis symbol
     document.getElementById('select-stock-analysis').addEventListener('change', (e) => {
@@ -521,13 +557,85 @@ function renderTrajectoryLineChart(data) {
     }
 }
 
-// 4. Render Tab 2: Breakout Scanner Rows
+// ─── Numbered Pagination Helper (1 to 10 Pages Window + Prev/Next Arrows) ────
+function renderNumberedPagination(containerId, currentPage, totalPages, onPageChangeFnName) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    
+    totalPages = Math.max(1, totalPages || 1);
+    currentPage = Math.max(1, Math.min(currentPage || 1, totalPages));
+    
+    let html = '';
+    
+    // Left Arrow (< Prev)
+    const prevDisabled = currentPage <= 1 ? 'disabled' : '';
+    const prevClick = currentPage > 1 ? `${onPageChangeFnName}(${currentPage - 1})` : '';
+    html += `<button class="page-btn page-arrow" ${prevDisabled} ${prevClick ? `onclick="${prevClick}"` : ''} title="Previous Page">
+        <i class="fa-solid fa-chevron-left"></i>
+    </button>`;
+    
+    // Calculate page window (show up to 10 numbered buttons: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+    let startPage = 1;
+    let endPage = Math.min(totalPages, 10);
+    
+    if (totalPages > 10) {
+        startPage = Math.max(1, currentPage - 4);
+        endPage = Math.min(totalPages, startPage + 9);
+        if (endPage - startPage < 9) {
+            startPage = Math.max(1, endPage - 9);
+        }
+    }
+    
+    // First Page Jump + Ellipsis (if window shifted past page 1)
+    if (startPage > 1) {
+        html += `<button class="page-btn ${currentPage === 1 ? 'active' : ''}" onclick="${onPageChangeFnName}(1)">1</button>`;
+        if (startPage > 2) {
+            html += `<span class="page-dots">...</span>`;
+        }
+    }
+    
+    // Numbered Buttons (1 to 10)
+    for (let p = startPage; p <= endPage; p++) {
+        const activeClass = p === currentPage ? 'active' : '';
+        html += `<button class="page-btn ${activeClass}" onclick="${onPageChangeFnName}(${p})">${p}</button>`;
+    }
+    
+    // Ellipsis + Last Page Jump (if window doesn't reach totalPages)
+    if (endPage < totalPages) {
+        if (endPage < totalPages - 1) {
+            html += `<span class="page-dots">...</span>`;
+        }
+        html += `<button class="page-btn ${currentPage === totalPages ? 'active' : ''}" onclick="${onPageChangeFnName}(${totalPages})">${totalPages}</button>`;
+    }
+    
+    // Right Arrow (Next >)
+    const nextDisabled = currentPage >= totalPages ? 'disabled' : '';
+    const nextClick = currentPage < totalPages ? `${onPageChangeFnName}(${currentPage + 1})` : '';
+    html += `<button class="page-btn page-arrow" ${nextDisabled} ${nextClick ? `onclick="${nextClick}"` : ''} title="Next Page">
+        <i class="fa-solid fa-chevron-right"></i>
+    </button>`;
+    
+    container.innerHTML = html;
+}
+
+
+// 4. Render Tab 2: Breakout Scanner Rows (Fast Paginated Renderer - 15 alerts/page)
+let breakoutCurrentPage = 1;
+const BREAKOUT_PAGE_SIZE = 15;
+
+window.goToBreakoutPage = function(page) {
+    breakoutCurrentPage = page;
+    renderBreakoutScannerRows();
+    const tableEl = document.querySelector('#tab2 .table-container');
+    if (tableEl) tableEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+};
+
 function renderBreakoutScannerRows() {
     const tbody = document.getElementById('breakout-table-body');
-    tbody.innerHTML = '';
+    if (!tbody) return;
     
-    const filterSig = document.getElementById('breakout-filter-sig').value;
-    const sortBy = document.getElementById('breakout-sort-by').value;
+    const filterSig = document.getElementById('breakout-filter-sig')?.value || 'ALL SIGNALS';
+    const sortBy = document.getElementById('breakout-sort-by')?.value || 'time-desc';
     
     let processed = [...rawBreakoutScannerAlerts];
     
@@ -547,41 +655,70 @@ function renderBreakoutScannerRows() {
         return 0;
     });
     
-    if (processed.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;color:var(--text-muted)">No breakout scanner alerts found.</td></tr>`;
+    const totalCount = processed.length;
+    const totalPages = Math.max(1, Math.ceil(totalCount / BREAKOUT_PAGE_SIZE));
+    
+    // Clamp current page
+    if (breakoutCurrentPage > totalPages) breakoutCurrentPage = totalPages;
+    if (breakoutCurrentPage < 1) breakoutCurrentPage = 1;
+    
+    // Update pagination UI elements
+    const startIdx = (breakoutCurrentPage - 1) * BREAKOUT_PAGE_SIZE;
+    const endIdx = Math.min(startIdx + BREAKOUT_PAGE_SIZE, totalCount);
+    
+    const rangeTextEl = document.getElementById('breakout-range-text');
+    const totalTextEl = document.getElementById('breakout-total-text');
+    const paginationBar = document.getElementById('breakout-pagination-bar');
+    
+    if (totalCount === 0) {
+        if (paginationBar) paginationBar.style.display = 'none';
+        tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;color:var(--text-muted);padding:32px 16px;"><i class="fa-regular fa-bell-slash" style="margin-right:8px;"></i> No breakout scanner alerts found.</td></tr>`;
         return;
     }
     
-    processed.forEach((item, index) => {
+    if (paginationBar) paginationBar.style.display = 'flex';
+    if (rangeTextEl) rangeTextEl.textContent = `${startIdx + 1}-${endIdx}`;
+    if (totalTextEl) totalTextEl.textContent = totalCount.toLocaleString();
+    
+    // Render 1 to 10 numbered buttons
+    renderNumberedPagination('breakout-pagination-controls', breakoutCurrentPage, totalPages, 'goToBreakoutPage');
+    
+    // Slice only the 15 alerts for the active page
+    const pageItems = processed.slice(startIdx, endIdx);
+    
+    let html = '';
+    pageItems.forEach((item, index) => {
         let sigClass = 'badge-blue';
-        if (item.edge_signal.includes('BULLISH')) sigClass = 'badge-green';
-        if (item.edge_signal.includes('BEARISH')) sigClass = 'badge-red';
+        if (item.edge_signal && item.edge_signal.includes('BULLISH')) sigClass = 'badge-green';
+        if (item.edge_signal && item.edge_signal.includes('BEARISH')) sigClass = 'badge-red';
         
-        tbody.innerHTML += `
+        const globalRowIdx = startIdx + index + 1;
+        
+        html += `
             <tr>
-                <td class="font-bold">${index + 1}</td>
-                <td class="font-mono" style="font-size:0.8rem">${item.timestamp}</td>
+                <td class="font-bold">${globalRowIdx}</td>
+                <td class="font-mono" style="font-size:0.8rem;color:#38bdf8;">${item.timestamp}</td>
                 <td class="font-bold text-accent">${item.symbol}</td>
-                <td class="font-mono">${item.spot_price.toFixed(2)}</td>
+                <td class="font-mono">₹${(item.spot_price || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                 <td><span class="badge ${sigClass}">${item.edge_signal}</span></td>
-                <td class="font-mono font-bold">${item.iv_ratio.toFixed(2)}</td>
-                <td class="font-mono">${item.iv_skew.toFixed(2)}</td>
-                <td class="font-mono">${item.vw_iv_call.toFixed(2)}</td>
-                <td class="font-mono">${item.vw_iv_put.toFixed(2)}</td>
-                <td class="font-mono ${item.call_flow_net > 0 ? 'text-green' : (item.call_flow_net < 0 ? 'text-red' : '')}">${item.call_flow_net.toFixed(0)}</td>
-                <td class="font-mono ${item.put_flow_net > 0 ? 'text-green' : (item.put_flow_net < 0 ? 'text-red' : '')}">${item.put_flow_net.toFixed(0)}</td>
+                <td class="font-mono font-bold">${(item.iv_ratio || 0).toFixed(2)}</td>
+                <td class="font-mono">${(item.iv_skew || 0).toFixed(2)}</td>
+                <td class="font-mono">${(item.vw_iv_call || 0).toFixed(2)}</td>
+                <td class="font-mono">${(item.vw_iv_put || 0).toFixed(2)}</td>
+                <td class="font-mono ${item.call_flow_net > 0 ? 'text-green' : (item.call_flow_net < 0 ? 'text-red' : '')}">${(item.call_flow_net || 0).toFixed(0)}</td>
+                <td class="font-mono ${item.put_flow_net > 0 ? 'text-green' : (item.put_flow_net < 0 ? 'text-red' : '')}">${(item.put_flow_net || 0).toFixed(0)}</td>
             </tr>
         `;
     });
+    
+    tbody.innerHTML = html;
 }
 
 // 5. Render Tab 3: Live Alerts Log V1 Rows
 function renderV1AlertsRows(alerts) {
     const intradayBody = document.getElementById('alerts-v1-intraday-body');
     const positionalBody = document.getElementById('alerts-v1-positional-body');
-    
-    intradayBody.innerHTML = '';
-    positionalBody.innerHTML = '';
+    if (!intradayBody || !positionalBody) return;
     
     const intradayAlerts = alerts.filter(a => a.mode === 'INTRADAY');
     const positionalAlerts = alerts.filter(a => a.mode === 'POSITIONAL');
@@ -589,39 +726,43 @@ function renderV1AlertsRows(alerts) {
     if (intradayAlerts.length === 0) {
         intradayBody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--text-muted)">No V1 Intraday alerts triggered yet today.</td></tr>`;
     } else {
+        let html = '';
         intradayAlerts.forEach((a, idx) => {
             const dirBadge = a.direction === 'UP' ? 'badge-green' : 'badge-red';
-            intradayBody.innerHTML += `
+            html += `
                 <tr>
                     <td class="font-bold">${idx + 1}</td>
                     <td class="font-mono" style="font-size:0.8rem">${a.timestamp}</td>
                     <td class="font-bold text-accent">${a.symbol}</td>
                     <td><span class="badge badge-blue">${a.timeframe}</span></td>
                     <td><span class="badge ${dirBadge}">${a.direction}</span></td>
-                    <td class="font-mono">${a.spot.toFixed(2)}</td>
-                    <td style="font-size:0.8rem;color:var(--text-secondary)">${a.details}</td>
+                    <td class="font-mono">₹${(a.spot || 0).toFixed(2)}</td>
+                    <td style="font-size:0.8rem;color:var(--text-secondary)">${a.details || '—'}</td>
                 </tr>
             `;
         });
+        intradayBody.innerHTML = html;
     }
     
     if (positionalAlerts.length === 0) {
         positionalBody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--text-muted)">No V1 Positional alerts triggered yet today.</td></tr>`;
     } else {
+        let html = '';
         positionalAlerts.forEach((a, idx) => {
             const dirBadge = a.direction === 'UP' ? 'badge-green' : 'badge-red';
-            positionalBody.innerHTML += `
+            html += `
                 <tr>
                     <td class="font-bold">${idx + 1}</td>
                     <td class="font-mono" style="font-size:0.8rem">${a.timestamp}</td>
                     <td class="font-bold text-accent">${a.symbol}</td>
                     <td><span class="badge badge-blue">${a.timeframe}</span></td>
                     <td><span class="badge ${dirBadge}">${a.direction}</span></td>
-                    <td class="font-mono">${a.spot.toFixed(2)}</td>
-                    <td style="font-size:0.8rem;color:var(--text-secondary)">${a.details}</td>
+                    <td class="font-mono">₹${(a.spot || 0).toFixed(2)}</td>
+                    <td style="font-size:0.8rem;color:var(--text-secondary)">${a.details || '—'}</td>
                 </tr>
             `;
         });
+        positionalBody.innerHTML = html;
     }
 }
 
@@ -629,9 +770,7 @@ function renderV1AlertsRows(alerts) {
 function renderV2AlertsRows(alerts) {
     const intradayBody = document.getElementById('alerts-v2-intraday-body');
     const positionalBody = document.getElementById('alerts-v2-positional-body');
-    
-    intradayBody.innerHTML = '';
-    positionalBody.innerHTML = '';
+    if (!intradayBody || !positionalBody) return;
     
     const intradayAlerts = alerts.filter(a => a.mode === 'INTRADAY');
     const positionalAlerts = alerts.filter(a => a.mode === 'POSITIONAL');
@@ -639,39 +778,43 @@ function renderV2AlertsRows(alerts) {
     if (intradayAlerts.length === 0) {
         intradayBody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--text-muted)">No V2 Intraday alerts triggered yet today.</td></tr>`;
     } else {
+        let html = '';
         intradayAlerts.forEach((a, idx) => {
             const dirBadge = a.direction === 'UP' ? 'badge-green' : 'badge-red';
-            intradayBody.innerHTML += `
+            html += `
                 <tr>
                     <td class="font-bold">${idx + 1}</td>
                     <td class="font-mono" style="font-size:0.8rem">${a.timestamp}</td>
                     <td class="font-bold text-accent">${a.symbol}</td>
                     <td><span class="badge badge-blue">${a.timeframe}</span></td>
                     <td><span class="badge ${dirBadge}">${a.direction}</span></td>
-                    <td class="font-mono">${a.spot.toFixed(2)}</td>
-                    <td style="font-size:0.8rem;color:var(--text-secondary)">${a.details}</td>
+                    <td class="font-mono">₹${(a.spot || 0).toFixed(2)}</td>
+                    <td style="font-size:0.8rem;color:var(--text-secondary)">${a.details || '—'}</td>
                 </tr>
             `;
         });
+        intradayBody.innerHTML = html;
     }
     
     if (positionalAlerts.length === 0) {
         positionalBody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--text-muted)">No V2 Positional alerts triggered yet today.</td></tr>`;
     } else {
+        let html = '';
         positionalAlerts.forEach((a, idx) => {
             const dirBadge = a.direction === 'UP' ? 'badge-green' : 'badge-red';
-            positionalBody.innerHTML += `
+            html += `
                 <tr>
                     <td class="font-bold">${idx + 1}</td>
                     <td class="font-mono" style="font-size:0.8rem">${a.timestamp}</td>
                     <td class="font-bold text-accent">${a.symbol}</td>
                     <td><span class="badge badge-blue">${a.timeframe}</span></td>
                     <td><span class="badge ${dirBadge}">${a.direction}</span></td>
-                    <td class="font-mono">${a.spot.toFixed(2)}</td>
-                    <td style="font-size:0.8rem;color:var(--text-secondary)">${a.details}</td>
+                    <td class="font-mono">₹${(a.spot || 0).toFixed(2)}</td>
+                    <td style="font-size:0.8rem;color:var(--text-secondary)">${a.details || '—'}</td>
                 </tr>
             `;
         });
+        positionalBody.innerHTML = html;
     }
 }
 
@@ -846,27 +989,33 @@ function renderFrozenRetestSummary(data) {
 
 // ─── Real-Time Alert Toast Notification engine ───────────────────────────────
 function processNewAlertsToasts(alertsList, alertTypeLabel, toastHeading) {
+    if (!alertsList || !Array.isArray(alertsList)) return;
+    
+    // Check if this is the very first fetch on page load
+    const isFirstRun = seenAlertIds.size === 0;
+    
     alertsList.forEach(a => {
-        const uniqueKey = `${alertTypeLabel}_${a.symbol}_${a.direction || a.edge_signal}_${a.timestamp}`;
+        const uniqueKey = `${alertTypeLabel}_${a.symbol}_${a.direction || a.edge_signal}_${a.timestamp || a.ts_ist}`;
         if (!seenAlertIds.has(uniqueKey)) {
             seenAlertIds.add(uniqueKey);
             
-            // Only toast if the alert timestamp is recent (after page load time)
-            let alertDate = null;
-            try {
-                const cleanTs = a.timestamp.replace(' IST', '');
-                alertDate = new Date(cleanTs);
-            } catch (e) {}
-            
-            if (alertDate && alertDate > pageLoadTime) {
-                showToast(toastHeading, `🚨 ${a.symbol} [${a.direction || a.edge_signal}] at ${a.spot || a.spot_price || ''}. ${a.details || ''}`, alertTypeLabel.toLowerCase());
-            }
+            // Do not show popup spam on initial page load
+            if (isFirstRun) return;
+
+            showToast(toastHeading, `🚨 ${a.symbol} [${a.direction || a.edge_signal}] at ₹${a.spot || a.spot_price || ''}`, alertTypeLabel.toLowerCase());
         }
     });
 }
 
 function showToast(title, msg, typeClass) {
     const container = document.getElementById('toast-container');
+    if (!container) return;
+
+    // Limit maximum active toasts to 2 to prevent screen clutter
+    while (container.children.length >= 2) {
+        container.firstElementChild.remove();
+    }
+
     const toast = document.createElement('div');
     toast.className = `custom-toast ${typeClass}`;
     
@@ -885,11 +1034,13 @@ function showToast(title, msg, typeClass) {
     
     container.appendChild(toast);
     
-    // Automatically remove after 8 seconds
+    // Automatically remove after 3.5 seconds
     setTimeout(() => {
-        toast.style.animation = 'fadeOut 0.5s ease forwards';
-        setTimeout(() => toast.remove(), 500);
-    }, 8000);
+        if (toast && toast.parentElement) {
+            toast.style.animation = 'fadeOut 0.3s ease forwards';
+            setTimeout(() => toast.remove(), 300);
+        }
+    }, 3500);
 }
 
 // ─── CSV Download & Clearing Alert APIs ──────────────────────────────────────
@@ -932,3 +1083,185 @@ function downloadCSV(collection, startInputId, endInputId, mode) {
     
     window.open(url, '_blank');
 }
+
+// ─── Price & OI Combination Scanner Logic & Date Navigator ──────────────────
+function getRecentTradingDays(count = 5) {
+    const days = [];
+    let d = new Date();
+    while (days.length < count) {
+        const dayOfWeek = d.getDay(); // 0 = Sun, 6 = Sat
+        if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            days.push(`${y}-${m}-${day}`);
+        }
+        d.setDate(d.getDate() - 1);
+    }
+    return days;
+}
+
+let poiTradingDays = getRecentTradingDays(5);
+let poiDayIndex = 0; // 0 = Today (max date)
+let rawPoiScannerAlerts = [];
+let rawPoiSummary = {};
+
+function updatePoiDateNavigatorUI() {
+    const dateTextEl = document.getElementById('poi-current-date-text');
+    const prevBtn = document.getElementById('poi-prev-day-btn');
+    const nextBtn = document.getElementById('poi-next-day-btn');
+    
+    const curDateStr = poiTradingDays[poiDayIndex] || '';
+    if (dateTextEl) {
+        if (poiDayIndex === 0) {
+            dateTextEl.textContent = `Today (${curDateStr})`;
+        } else {
+            const dt = new Date(curDateStr + 'T00:00:00');
+            const dayName = dt.toLocaleDateString('en-US', { weekday: 'short' });
+            dateTextEl.textContent = `${dayName} (${curDateStr})`;
+        }
+    }
+    
+    if (nextBtn) {
+        // Can't go into tomorrow
+        nextBtn.disabled = (poiDayIndex <= 0);
+    }
+    if (prevBtn) {
+        // Max 5 past days
+        prevBtn.disabled = (poiDayIndex >= poiTradingDays.length - 1);
+    }
+}
+
+function navigatePoiDay(delta) {
+    const newIndex = poiDayIndex + delta;
+    if (newIndex >= 0 && newIndex < poiTradingDays.length) {
+        poiDayIndex = newIndex;
+        updatePoiDateNavigatorUI();
+        fetchPriceOiScannerData();
+    }
+}
+
+let poiCurrentPage = 1;
+const POI_PAGE_SIZE = 15;
+
+window.goToPoiPage = function(page) {
+    poiCurrentPage = page;
+    renderPoiScannerRows();
+    const tableEl = document.querySelector('#tab6 .table-container');
+    if (tableEl) tableEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+};
+
+// 0ms Instant Client-Side Filter & Renderer (with Numbered Pagination)
+function renderPoiScannerRows() {
+    const category = document.getElementById('poi-category-filter')?.value || '';
+    const minOi = parseFloat(document.getElementById('poi-min-oi-input')?.value || 0);
+
+    let filtered = [...rawPoiScannerAlerts];
+
+    if (category) {
+        filtered = filtered.filter(x => x.quadrant === category);
+    }
+    if (minOi > 0) {
+        filtered = filtered.filter(x => Math.abs(x.oi_change_pct) >= minOi);
+    }
+
+    // Update Summary Stat Cards from raw data
+    const summary = rawPoiSummary || {};
+    const elLong = document.getElementById('stat-poi-long-buildup');
+    const elSC = document.getElementById('stat-poi-short-covering');
+    const elSB = document.getElementById('stat-poi-short-buildup');
+    const elLU = document.getElementById('stat-poi-long-unwinding');
+
+    if (elLong) elLong.textContent = summary.long_buildup || 0;
+    if (elSC) elSC.textContent = summary.short_covering || 0;
+    if (elSB) elSB.textContent = summary.short_buildup || 0;
+    if (elLU) elLU.textContent = summary.long_unwinding || 0;
+
+    // Render Table Rows
+    const tbody = document.getElementById('poi-table-body');
+    if (!tbody) return;
+
+    const totalCount = filtered.length;
+    const totalPages = Math.max(1, Math.ceil(totalCount / POI_PAGE_SIZE));
+
+    if (poiCurrentPage > totalPages) poiCurrentPage = totalPages;
+    if (poiCurrentPage < 1) poiCurrentPage = 1;
+
+    const startIdx = (poiCurrentPage - 1) * POI_PAGE_SIZE;
+    const endIdx = Math.min(startIdx + POI_PAGE_SIZE, totalCount);
+
+    const paginationBar = document.getElementById('poi-pagination-bar');
+    const rangeTextEl = document.getElementById('poi-range-text');
+    const totalTextEl = document.getElementById('poi-total-text');
+
+    if (totalCount === 0) {
+        if (paginationBar) paginationBar.style.display = 'none';
+        tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 36px 20px; font-size: 0.92rem;"><i class="fa-regular fa-calendar-xmark" style="margin-right: 8px; font-size: 1.1rem; color: var(--text-secondary);"></i> No alerts recorded for this date.</td></tr>`;
+        return;
+    }
+
+    if (totalPages > 1) {
+        if (paginationBar) paginationBar.style.display = 'flex';
+        if (rangeTextEl) rangeTextEl.textContent = `${startIdx + 1}-${endIdx}`;
+        if (totalTextEl) totalTextEl.textContent = totalCount.toLocaleString();
+        renderNumberedPagination('poi-pagination-controls', poiCurrentPage, totalPages, 'goToPoiPage');
+    } else {
+        if (paginationBar) paginationBar.style.display = 'none';
+    }
+
+    const pageItems = filtered.slice(startIdx, endIdx);
+
+    let html = '';
+    pageItems.forEach(item => {
+        const priceChgClass = item.price_change_pct >= 0 ? 'text-green' : 'text-red';
+        const oiChgClass = item.oi_change_pct >= 0 ? 'text-green' : 'text-red';
+        const pricePrefix = item.price_change >= 0 ? '+' : '';
+        const oiPrefix = item.oi_change >= 0 ? '+' : '';
+
+        const formattedTime = formatAlertTime(item.ts_ist);
+
+        html += `
+            <tr>
+                <td><strong>${item.symbol}</strong></td>
+                <td>₹${(item.spot_price || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                <td class="${priceChgClass}">${pricePrefix}${item.price_change_pct}% <small>(${pricePrefix}${item.price_change})</small></td>
+                <td>${(item.total_oi || 0).toLocaleString('en-IN')}</td>
+                <td class="${oiChgClass}">${oiPrefix}${item.oi_change_pct}% <small>(${oiPrefix}${(item.oi_change || 0).toLocaleString('en-IN')})</small></td>
+                <td><span class="badge ${item.badge_class}"><i class="fa-solid ${item.icon}"></i> ${item.label}</span></td>
+                <td>${item.pcr || 0}</td>
+                <td><small style="color: var(--text-secondary);">${item.top_strike || '—'}</small></td>
+                <td>${formattedTime}</td>
+            </tr>
+        `;
+    });
+
+    tbody.innerHTML = html;
+}
+
+async function fetchPriceOiScannerData() {
+    const dateStr = poiTradingDays[poiDayIndex] || '';
+
+    try {
+        const url = `/api/scanners/price-oi?date=${encodeURIComponent(dateStr)}`;
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const data = await res.json();
+
+        rawPoiSummary = data.summary || {};
+        rawPoiScannerAlerts = data.items || [];
+
+        renderPoiScannerRows();
+    } catch (err) {
+        console.error('Error fetching Price & OI scanner data:', err);
+    }
+}
+
+function formatAlertTime(tsStr) {
+    if (!tsStr) return '—';
+    const timeMatch = tsStr.match(/(\d{2}:\d{2}:\d{2})/);
+    const dateMatch = tsStr.match(/(\d{4}-\d{2}-\d{2})/);
+    const timeStr = timeMatch ? timeMatch[1] : tsStr;
+    const dateStr = dateMatch ? dateMatch[1] : '';
+    return `<div style="font-family: 'JetBrains Mono', monospace; font-weight: 700; color: #38bdf8; font-size: 0.88rem;">${timeStr} IST</div><div style="color: var(--text-muted); font-size: 0.72rem;">${dateStr}</div>`;
+}
+

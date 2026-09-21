@@ -14,7 +14,7 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     
     <!-- Custom Style -->
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=2.2">
 </head>
 <body>
     <div class="app-container">
@@ -34,6 +34,7 @@
         <nav class="terminal-tabs">
             <button class="tab-btn active" data-tab="tab1"><i class="fa-solid fa-trophy"></i> Volatility Leaderboard</button>
             <button class="tab-btn" data-tab="tab2"><i class="fa-solid fa-crosshairs"></i> Breakout Scanner</button>
+            <button class="tab-btn" data-tab="tab6"><i class="fa-solid fa-chart-pie"></i> Price &amp; OI Scanner</button>
             <button class="tab-btn" data-tab="tab3"><i class="fa-solid fa-bell"></i> Live Alerts Log (V1)</button>
             <button class="tab-btn" data-tab="tab4"><i class="fa-solid fa-fire"></i> Early Breakouts (V2)</button>
             <button class="tab-btn" data-tab="tab5"><i class="fa-solid fa-cube"></i> Frozen Retest V1</button>
@@ -247,6 +248,16 @@
                             <!-- Dynamic rows -->
                         </tbody>
                     </table>
+                </div>
+
+                <!-- Breakout Scanner Numbered Pagination Bar (15 alerts per page) -->
+                <div class="pagination-bar" id="breakout-pagination-bar">
+                    <div class="pagination-info" id="breakout-page-info">
+                        Showing <strong style="color: var(--text-primary);" id="breakout-range-text">1-15</strong> of <strong style="color: var(--text-primary);" id="breakout-total-text">0</strong> alerts
+                    </div>
+                    <div class="pagination-controls" id="breakout-pagination-controls">
+                        <!-- Dynamically populated numbered page buttons: < 1 2 3 4 5 6 7 8 9 10 > -->
+                    </div>
                 </div>
             </section>
 
@@ -523,6 +534,135 @@
                     </div>
                 </div>
             </section>
+
+            <!-- TAB 6: Price & OI Combination Scanner -->
+            <section id="tab6" class="tab-pane">
+                <div class="section-label">Price &amp; Open Interest (OI) Combination Analytics</div>
+                
+                <!-- Stat Summary Boxes -->
+                <div class="stats-strip">
+                    <div class="stat-box" style="border-left: 4px solid #10b981;">
+                        <div class="stat-num text-green" id="stat-poi-long-buildup">—</div>
+                        <div class="stat-lbl">🟢 Long Buildup (Price ↑ OI ↑)</div>
+                    </div>
+                    <div class="stat-box" style="border-left: 4px solid #06b6d4;">
+                        <div class="stat-num text-blue" id="stat-poi-short-covering">—</div>
+                        <div class="stat-lbl">🚀 Short Covering (Price ↑ OI ↓)</div>
+                    </div>
+                    <div class="stat-box" style="border-left: 4px solid #ef4444;">
+                        <div class="stat-num text-red" id="stat-poi-short-buildup">—</div>
+                        <div class="stat-lbl">🔴 Short Buildup (Price ↓ OI ↑)</div>
+                    </div>
+                    <div class="stat-box" style="border-left: 4px solid #f59e0b;">
+                        <div class="stat-num text-purple" id="stat-poi-long-unwinding">—</div>
+                        <div class="stat-lbl">⚠️ Long Unwinding (Price ↓ OI ↓)</div>
+                    </div>
+                </div>
+
+                <!-- Quadrants Guide Banner -->
+                <div class="poi-quadrants-guide">
+                    <div class="quad-guide-card quad-long-buildup">
+                        <div class="quad-title"><i class="fa-solid fa-arrow-trend-up"></i> Long Buildup</div>
+                        <div class="quad-desc">Price <b>+</b> &nbsp;|&nbsp; OI <b>+</b> &nbsp;➔ Fresh Long Buyers</div>
+                    </div>
+                    <div class="quad-guide-card quad-short-covering">
+                        <div class="quad-title"><i class="fa-solid fa-rocket"></i> Short Covering</div>
+                        <div class="quad-desc">Price <b>+</b> &nbsp;|&nbsp; OI <b>-</b> &nbsp;➔ Short Sellers Exiting</div>
+                    </div>
+                    <div class="quad-guide-card quad-short-buildup">
+                        <div class="quad-title"><i class="fa-solid fa-arrow-trend-down"></i> Short Buildup</div>
+                        <div class="quad-desc">Price <b>-</b> &nbsp;|&nbsp; OI <b>+</b> &nbsp;➔ Fresh Short Sellers</div>
+                    </div>
+                    <div class="quad-guide-card quad-long-unwinding">
+                        <div class="quad-title"><i class="fa-solid fa-triangle-exclamation"></i> Long Unwinding</div>
+                        <div class="quad-desc">Price <b>-</b> &nbsp;|&nbsp; OI <b>-</b> &nbsp;➔ Long Profit Booking</div>
+                    </div>
+                </div>
+
+                <!-- Action Bar (Clear Alerts & Date Range CSV Download) -->
+                <div class="action-bar-panel">
+                    <button class="terminal-btn btn-danger" onclick="clearLiveAlerts('poi_scanner_alerts', null, 'tab6')"><i class="fa-solid fa-trash"></i> Clear Price &amp; OI Alerts</button>
+                    <div class="download-group">
+                        <span class="action-label">Download CSV:</span>
+                        <input type="date" id="dl-start-tab6" class="terminal-date">
+                        <input type="date" id="dl-end-tab6" class="terminal-date">
+                        <button class="terminal-btn btn-primary" onclick="downloadCSV('poi_scanner_alerts', 'dl-start-tab6', 'dl-end-tab6')"><i class="fa-solid fa-download"></i> Download CSV</button>
+                    </div>
+                </div>
+
+                <!-- Controls & Filter Toolbar -->
+                <div class="filter-bar" style="display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 16px;">
+                    <div style="display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap;">
+                        <div class="filter-group" style="min-width: 250px;">
+                            <label for="poi-category-filter">CATEGORY QUADRANT</label>
+                            <select id="poi-category-filter" class="terminal-select">
+                                <option value="">All Quadrants</option>
+                                <option value="LONG_BUILDUP">🟢 Long Buildup (Price ↑ OI ↑)</option>
+                                <option value="SHORT_COVERING">🚀 Short Covering (Price ↑ OI ↓)</option>
+                                <option value="SHORT_BUILDUP">🔴 Short Buildup (Price ↓ OI ↑)</option>
+                                <option value="LONG_UNWINDING">⚠️ Long Unwinding (Price ↓ OI ↓)</option>
+                            </select>
+                        </div>
+                        <div class="filter-group" style="width: 120px;">
+                            <label for="poi-min-oi-input">MIN |OI CHG %|</label>
+                            <input type="number" id="poi-min-oi-input" class="terminal-input" placeholder="0.0" step="0.5" min="0" value="0" style="padding: 9px 12px;" />
+                        </div>
+                        <button id="poi-refresh-btn" class="terminal-btn btn-primary" style="height: 38px; display: inline-flex; align-items: center; gap: 6px;">
+                            <i class="fa-solid fa-arrows-rotate"></i> Refresh
+                        </button>
+                    </div>
+
+                    <!-- Date Navigator: Left / Right Arrows (Past 5 Days max, Max Today) -->
+                    <div class="filter-group" style="align-items: flex-end;">
+                        <label>TRADING SESSION DATE</label>
+                        <div class="poi-date-navigator" style="display: flex; align-items: center; gap: 8px;">
+                            <button id="poi-prev-day-btn" class="terminal-btn btn-secondary" style="height: 38px; padding: 0 14px;" title="Previous Trading Day">
+                                <i class="fa-solid fa-chevron-left"></i> Prev
+                            </button>
+                            <div id="poi-current-date-badge" class="badge" style="background: var(--bg-surface-hover); border: 1px solid var(--border-color); color: #38bdf8; font-family: 'JetBrains Mono', monospace; font-size: 0.88rem; font-weight: 700; padding: 8px 14px; min-width: 165px; text-align: center;">
+                                <i class="fa-solid fa-calendar-day" style="margin-right: 6px;"></i> <span id="poi-current-date-text">Today</span>
+                            </div>
+                            <button id="poi-next-day-btn" class="terminal-btn btn-secondary" style="height: 38px; padding: 0 14px;" title="Next Trading Day" disabled>
+                                Next <i class="fa-solid fa-chevron-right"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Scanner Table -->
+                <div class="table-container">
+                    <table class="terminal-table">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Spot Price</th>
+                                <th>Price Chg %</th>
+                                <th>Total OI</th>
+                                <th>OI Chg %</th>
+                                <th>Market Sentiment</th>
+                                <th>PCR</th>
+                                <th>Top Strike Driver</th>
+                                <th>Alert Time (IST)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="poi-table-body">
+                            <tr>
+                                <td colspan="9" style="text-align: center; color: var(--text-muted);">Loading Price &amp; OI scanner data...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Price & OI Scanner Numbered Pagination Bar (15 alerts per page) -->
+                <div class="pagination-bar" id="poi-pagination-bar" style="display: none;">
+                    <div class="pagination-info" id="poi-page-info">
+                        Showing <strong style="color: var(--text-primary);" id="poi-range-text">1-15</strong> of <strong style="color: var(--text-primary);" id="poi-total-text">0</strong> alerts
+                    </div>
+                    <div class="pagination-controls" id="poi-pagination-controls">
+                        <!-- Dynamically populated numbered page buttons -->
+                    </div>
+                </div>
+            </section>
         </main>
     </div>
 
@@ -530,6 +670,6 @@
     <div class="toast-container" id="toast-container"></div>
 
     <!-- Custom Frontend Logic -->
-    <script src="/static/js/app.js"></script>
+    <script src="/static/js/app.js?v=2.2"></script>
 </body>
 </html>

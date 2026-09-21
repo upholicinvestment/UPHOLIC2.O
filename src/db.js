@@ -146,6 +146,151 @@ export async function writeSnapshot(snapshotDoc) {
     };
     await database.collection('breakoutscanner_alerts').insertOne(signalAlert);
   }
+
+  // 6. High-Conviction 3-Minute Price & OI Alert Trigger
+  await checkAndLogPoiAlert(database, snapshotDoc);
+}
+
+// In-memory cooldown tracking: symbol -> lastAlertTimeMs
+const poiAlertCooldowns = new Map();
+
+async function checkAndLogPoiAlert(database, snapshotDoc) {
+  try {
+    const symbol = snapshotDoc.symbol;
+    const nowMs = new Date(snapshotDoc.fetched_at || Date.now()).getTime();
+
+    // 30-minute cooldown per symbol to ensure top-quality alerts (~15-25/day)
+    const lastAlertTime = poiAlertCooldowns.get(symbol) || 0;
+    if (nowMs - lastAlertTime < 30 * 60 * 1000) {
+      return;
+    }
+
+    // Get previous snapshot from history
+    const prevSnap = await database.collection('snapshots')
+      .find({ symbol })
+      .sort({ fetched_at: -1 })
+      .skip(1)
+      .limit(1)
+      .toArray();
+
+    if (!prevSnap || prevSnap.length === 0) return;
+    const prevDoc = prevSnap[0];
+
+    const prevTimeMs = new Date(prevDoc.fetched_at || 0).getTime();
+    // Must be within continuous intraday trading (gap <= 10 mins), ignoring overnight gaps
+    if (nowMs - prevTimeMs > 10 * 60 * 1000 || nowMs - prevTimeMs < 60 * 1000) {
+      return;
+    }
+
+    const currentSpot = Number(snapshotDoc.spot_price || 0);
+    const prevSpot = Number(prevDoc.spot_price || 0);
+    if (!currentSpot || !prevSpot || prevSpot <= 0) return;
+
+    const priceChangePct = ((currentSpot - prevSpot) / prevSpot) * 100;
+    const priceChange = currentSpot - prevSpot;
+
+    const currentOptions = Array.isArray(snapshotDoc.options) ? snapshotDoc.options : [];
+    const prevOptions = Array.isArray(prevDoc.options) ? prevDoc.options : [];
+
+    let currentTotalOi = 0;
+    let callOi = 0;
+    let putOi = 0;
+    let topStrike = '—';
+    let maxStrikeDiff = 0;
+
+    for (const opt of currentOptions) {
+      const oi = Number(opt.oi || 0);
+      const pOi = Number(opt.previous_oi || 0);
+      currentTotalOi += oi;
+      if (opt.type === 'CE') callOi += oi;
+      else putOi += oi;
+
+      const diff = oi - pOi;
+      if (Math.abs(diff) > Math.abs(maxStrikeDiff)) {
+        maxStrikeDiff = diff;
+        topStrike = `${opt.strike} ${opt.type} (${diff > 0 ? '+' : ''}${Math.round(diff)})`;
+      }
+    }
+
+    let prevTotalOi = 0;
+    for (const opt of prevOptions) {
+      prevTotalOi += Number(opt.oi || 0);
+    }
+
+    if (prevTotalOi <= 0) return;
+
+    const oiChange = currentTotalOi - prevTotalOi;
+    const oiChangePct = (oiChange / prevTotalOi) * 100;
+
+    // Strict Institutional Quality Filters:
+    // 1. Min 0.60% price momentum in 3-minute candle
+    // 2. Min 1.00% OI surge/drop
+    // 3. Min 40,000 contracts absolute Total OI change
+    // 4. Min 15,000 contracts on the dominant driver strike
+    const isPriceSignificant = Math.abs(priceChangePct) >= 0.60;
+    const isOiSignificant = Math.abs(oiChangePct) >= 1.00 && Math.abs(oiChange) >= 40000;
+    const isStrikeSignificant = Math.abs(maxStrikeDiff) >= 15000;
+
+    if (!isPriceSignificant || !isOiSignificant || !isStrikeSignificant) {
+      return;
+    }
+
+    let quadrant, label, badgeClass, icon, color;
+    if (priceChangePct >= 0 && oiChangePct >= 0) {
+      quadrant = 'LONG_BUILDUP';
+      label = 'Long Buildup';
+      badgeClass = 'badge-long-buildup';
+      icon = 'fa-arrow-trend-up';
+      color = '#10b981';
+    } else if (priceChangePct >= 0 && oiChangePct < 0) {
+      quadrant = 'SHORT_COVERING';
+      label = 'Short Covering';
+      badgeClass = 'badge-short-covering';
+      icon = 'fa-rocket';
+      color = '#06b6d4';
+    } else if (priceChangePct < 0 && oiChangePct >= 0) {
+      quadrant = 'SHORT_BUILDUP';
+      label = 'Short Buildup';
+      badgeClass = 'badge-short-buildup';
+      icon = 'fa-arrow-trend-down';
+      color = '#ef4444';
+    } else {
+      quadrant = 'LONG_UNWINDING';
+      label = 'Long Unwinding';
+      badgeClass = 'badge-long-unwinding';
+      icon = 'fa-triangle-exclamation';
+      color = '#f59e0b';
+    }
+
+    const pcr = callOi > 0 ? Number((putOi / callOi).toFixed(2)) : 0;
+
+    const alertRecord = {
+      symbol,
+      spot_price: currentSpot,
+      price_change: Number(priceChange.toFixed(2)),
+      price_change_pct: Number(priceChangePct.toFixed(2)),
+      total_oi: currentTotalOi,
+      oi_change: oiChange,
+      oi_change_pct: Number(oiChangePct.toFixed(2)),
+      call_oi: callOi,
+      put_oi: putOi,
+      pcr,
+      quadrant,
+      label,
+      badge_class: badgeClass,
+      icon,
+      color,
+      top_strike: topStrike,
+      timestamp: new Date(snapshotDoc.fetched_at || Date.now()),
+      ts_ist: snapshotDoc.ts_ist
+    };
+
+    await database.collection('poi_scanner_alerts').insertOne(alertRecord);
+    poiAlertCooldowns.set(symbol, nowMs);
+    console.log(`[POI ALERT] ${snapshotDoc.ts_ist} -> ${symbol} ${label} (Price: ${priceChangePct.toFixed(2)}%, OI: ${oiChangePct.toFixed(2)}%)`);
+  } catch (err) {
+    console.error('[POI ALERT] Error checking alert:', err);
+  }
 }
 
 function calculateIvEdge(options, spot_price, otm_threshold_pct = 1.5) {

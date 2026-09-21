@@ -3,7 +3,7 @@ import json
 import pymongo
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from flask import Flask, jsonify, render_template, request, send_file
 from dotenv import load_dotenv
@@ -14,22 +14,88 @@ load_dotenv()
 app = Flask(__name__, template_folder='templates', static_folder='static')
 
 # ─── DB Connection Helper ─────────────────────────────────────────────────────
+_mongo_client = None
+
 def get_db():
-    uri = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+    global _mongo_client
+    if _mongo_client is None:
+        uri = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+        _mongo_client = pymongo.MongoClient(uri, maxPoolSize=50, serverSelectionTimeoutMS=2000)
     db_name = os.getenv("MONGO_DB", "UPHOLIC2_O")
-    return pymongo.MongoClient(uri)[db_name]
+    return _mongo_client[db_name]
+
+
+# ─── Market Trading Date Helper ────────────────────────────────────────────────
+def get_active_trading_date():
+    """
+    Returns the active trading date string (YYYY-MM-DD) according to Indian market rules:
+    - On weekdays (Mon-Fri) AFTER 09:15 AM: STRICTLY Today's date (live session).
+    - On weekdays (Mon-Fri) BEFORE 09:15 AM: Previous working trading day (yesterday, or Friday if Monday morning).
+    - On weekends (Saturday/Sunday): Previous Friday (last completed working trading day).
+    - After 15:30: Today's completed session data remains active until next day 09:15 AM.
+    """
+    now_utc = datetime.now(timezone.utc)
+    now_ist = now_utc + timedelta(hours=5, minutes=30)
+    
+    weekday = now_ist.weekday()  # 0=Mon, ..., 4=Fri, 5=Sat, 6=Sun
+    time_min = now_ist.hour * 60 + now_ist.minute
+    market_open_min = 9 * 60 + 15  # 09:15 AM IST
+    
+    if weekday == 5:  # Saturday -> Friday
+        active_dt = now_ist - timedelta(days=1)
+    elif weekday == 6:  # Sunday -> Friday
+        active_dt = now_ist - timedelta(days=2)
+    else:
+        # Weekday (Mon-Fri)
+        if time_min >= market_open_min:
+            # AFTER 09:15 AM -> ALWAYS STRICTLY TODAY'S LIVE DATA
+            active_dt = now_ist
+        else:
+            # Before 09:15 AM -> Last trading day (Friday if Mon, else yesterday)
+            if weekday == 0:
+                active_dt = now_ist - timedelta(days=3)
+            else:
+                active_dt = now_ist - timedelta(days=1)
+                
+    return active_dt.strftime("%Y-%m-%d")
+
+
+def is_live_market_open():
+    """Returns True if current time is within live market trading hours (Mon-Fri 09:15 - 15:40 IST)."""
+    now_utc = datetime.now(timezone.utc)
+    now_ist = now_utc + timedelta(hours=5, minutes=30)
+    if now_ist.weekday() >= 5:
+        return False
+    time_min = now_ist.hour * 60 + now_ist.minute
+    return (9 * 60 + 15) <= time_min <= (15 * 60 + 40)
+
 
 # ─── Data Loaders from breakout_scanner_ui.py ─────────────────────────────────
 def load_data():
     try:
+        active_date = get_active_trading_date()
         col = get_db()["latest_snapshot"]
-        cursor = col.find({}, {
+        
+        # If market is open (after 09:15 AM on weekday), filter strictly for today's snapshot
+        query = {}
+        if is_live_market_open():
+            query["ts_ist"] = { "$regex": f"^{active_date}" }
+
+        cursor = col.find(query, {
             "symbol": 1, "spot_price": 1, "expiry": 1,
             "iv4": 1, "ce_iv_oi_weighted": 1, "pe_iv_oi_weighted": 1,
             "iv_skew": 1, "iv_ratio": 1, "ts_ist": 1,
             "iv4_change_5m": 1, "top_strike_iv_change_5m": 1
         })
         docs = list(cursor)
+        if not docs:
+            # If no live docs yet for today during first minutes, fallback to latest
+            docs = list(col.find({}, {
+                "symbol": 1, "spot_price": 1, "expiry": 1,
+                "iv4": 1, "ce_iv_oi_weighted": 1, "pe_iv_oi_weighted": 1,
+                "iv_skew": 1, "iv_ratio": 1, "ts_ist": 1,
+                "iv4_change_5m": 1, "top_strike_iv_change_5m": 1
+            }))
         if not docs:
             return pd.DataFrame()
         df = pd.DataFrame(docs).drop(columns=["_id"], errors="ignore")
@@ -61,10 +127,10 @@ def load_data():
 def load_stock_history(symbol):
     try:
         col = get_db()["snapshots"]
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        active_date = get_active_trading_date()
         cursor = col.find({
             "symbol": symbol,
-            "ts_ist": { "$regex": f"^{today_str}" }
+            "ts_ist": { "$regex": f"^{active_date}" }
         }, {
             "iv4": 1, "ce_iv_oi_weighted": 1, "pe_iv_oi_weighted": 1, "ts_ist": 1
         }).sort("ts", 1)
@@ -89,9 +155,9 @@ def load_stock_history(symbol):
 def load_live_breakout_alerts_today():
     try:
         col = get_db()["v1_scanner_alerts"]
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        active_date = get_active_trading_date()
         cursor = col.find({
-            "ts_ist": { "$regex": f"^{today_str}" }
+            "ts_ist": { "$regex": f"^{active_date}" }
         }).sort("timestamp", -1)
         
         docs = list(cursor)
@@ -118,9 +184,9 @@ def load_live_breakout_alerts_today():
 def load_live_v2_alerts_today():
     try:
         col = get_db()["v2_scanner_alerts"]
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        active_date = get_active_trading_date()
         cursor = col.find({
-            "ts_ist": { "$regex": f"^{today_str}" }
+            "ts_ist": { "$regex": f"^{active_date}" }
         }).sort("timestamp", -1)
         
         docs = list(cursor)
@@ -138,6 +204,10 @@ def load_live_v2_alerts_today():
                 "details": d.get("details", ""),
                 "mode": d.get("mode", "INTRADAY")
             })
+        return alerts
+    except Exception as e:
+        print(f"MongoDB error load_live_v2_alerts_today: {e}")
+        return []
         return alerts
     except Exception as e:
         print(f"MongoDB error load_live_v2_alerts_today: {e}")
@@ -217,16 +287,33 @@ def load_alerts_by_date(date_str, collection_name="v1_scanner_alerts"):
         if not docs:
             return []
         alerts = []
-        for d in docs:
-            alerts.append({
-                "timestamp": d.get("ts_ist", ""),
-                "symbol": d.get("symbol", ""),
-                "timeframe": d.get("timeframe", "15m"),
-                "direction": d.get("direction", ""),
-                "spot": d.get("spot", 0.0),
-                "details": d.get("details", ""),
-                "mode": d.get("mode", "INTRADAY")
-            })
+        if collection_name == "poi_scanner_alerts":
+            for d in docs:
+                alerts.append({
+                    "Alert Time (IST)": d.get("ts_ist", ""),
+                    "Symbol": d.get("symbol", ""),
+                    "Spot Price": d.get("spot_price", 0.0),
+                    "Price Change %": d.get("price_change_pct", 0.0),
+                    "Price Change": d.get("price_change", 0.0),
+                    "Total OI": d.get("total_oi", 0),
+                    "OI Change %": d.get("oi_change_pct", 0.0),
+                    "OI Change": d.get("oi_change", 0),
+                    "Market Sentiment": d.get("label", ""),
+                    "Quadrant": d.get("quadrant", ""),
+                    "PCR": d.get("pcr", 0.0),
+                    "Top Strike Driver": d.get("top_strike", "")
+                })
+        else:
+            for d in docs:
+                alerts.append({
+                    "timestamp": d.get("ts_ist", ""),
+                    "symbol": d.get("symbol", ""),
+                    "timeframe": d.get("timeframe", "15m"),
+                    "direction": d.get("direction", ""),
+                    "spot": d.get("spot", 0.0),
+                    "details": d.get("details", ""),
+                    "mode": d.get("mode", "INTRADAY")
+                })
         return alerts
     except Exception as e:
         print(f"MongoDB error load_alerts_by_date: {e}")
@@ -488,8 +575,107 @@ def download_alerts():
         return str(e), 500
 
 
+# ─── Price & OI Combination Scanner Data Loader & API ─────────────────────────
+
+def load_price_oi_scanner_data(date_str=None):
+    """
+    Sub-10ms High-Speed Price & OI Scanner Data Loader.
+    Strictly queries indexed poi_scanner_alerts for target_date.
+    If no alerts exist for that date, returns a clean empty list.
+    """
+    try:
+        db = get_db()
+        active_date = get_active_trading_date()
+        target_date = date_str if date_str else active_date
+
+        alerts_col = db["poi_scanner_alerts"]
+        
+        # Query strictly for target_date
+        query = {"ts_ist": {"$regex": f"^{target_date}"}}
+        db_alerts = list(alerts_col.find(query, {"_id": 0}).sort("timestamp", -1).limit(100))
+
+        summary = {
+            "total": len(db_alerts),
+            "long_buildup": len([a for a in db_alerts if a.get("quadrant") == "LONG_BUILDUP"]),
+            "short_covering": len([a for a in db_alerts if a.get("quadrant") == "SHORT_COVERING"]),
+            "short_buildup": len([a for a in db_alerts if a.get("quadrant") == "SHORT_BUILDUP"]),
+            "long_unwinding": len([a for a in db_alerts if a.get("quadrant") == "LONG_UNWINDING"]),
+        }
+        return {"summary": summary, "items": db_alerts}
+
+    except Exception as e:
+        print(f"MongoDB error load_price_oi_scanner_data: {e}")
+        return {"summary": {"total": 0, "long_buildup": 0, "short_covering": 0, "short_buildup": 0, "long_unwinding": 0}, "items": []}
+
+    except Exception as e:
+        print(f"MongoDB error load_price_oi_scanner_data: {e}")
+        return {"summary": {"total": 0, "long_buildup": 0, "short_covering": 0, "short_buildup": 0, "long_unwinding": 0}, "items": []}
+
+
+@app.route('/api/scanners/price-oi')
+def get_price_oi_scanner():
+    date_str = request.args.get('date', '').strip()
+    data = load_price_oi_scanner_data(date_str)
+    
+    category = request.args.get('category', '').strip().upper()
+    search = request.args.get('search', '').strip().upper()
+    min_oi = float(request.args.get('min_oi', 0.0))
+    
+    items = data["items"]
+    if category:
+        items = [x for x in items if x["quadrant"] == category]
+    if search:
+        items = [x for x in items if search in x["symbol"]]
+    if min_oi > 0:
+        items = [x for x in items if abs(x["oi_change_pct"]) >= min_oi]
+        
+    return jsonify({
+        "summary": data["summary"],
+        "items": items
+    })
+
+
+@app.route('/api/scanners/price-oi/download')
+def download_price_oi_scanner():
+    date_str = request.args.get('date', '').strip()
+    data = load_price_oi_scanner_data(date_str)
+    items = data.get('items', [])
+    
+    if not items:
+        return "No alerts found for selected date", 404
+        
+    df = pd.DataFrame(items)
+    column_mapping = {
+        'ts_ist': 'Alert Time (IST)',
+        'symbol': 'Symbol',
+        'label': 'Sentiment / Quadrant',
+        'spot_price': 'Spot Price (₹)',
+        'price_change': 'Price Change (₹)',
+        'price_change_pct': 'Price Change %',
+        'total_oi': 'Total Open Interest',
+        'oi_change': 'OI Change (Contracts)',
+        'oi_change_pct': 'OI Change %',
+        'call_oi': 'Total Call OI',
+        'put_oi': 'Total Put OI',
+        'pcr': 'PCR',
+        'top_strike': 'Top Strike Driver'
+    }
+    cols_to_keep = [c for c in column_mapping.keys() if c in df.columns]
+    df_export = df[cols_to_keep].rename(columns=column_mapping)
+    
+    csv_path = Path("Price_OI_Alerts_Export.csv")
+    df_export.to_csv(csv_path, index=False)
+    
+    filename = f"Price_OI_Alerts_{date_str or 'Today'}.csv"
+    return send_file(
+        csv_path,
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=filename
+    )
+
+
 if __name__ == '__main__':
-    # Streamlit ran on 8101, Flask will run on 8101 to replace it completely
     port = int(os.getenv("STREAMLIT_SERVER_PORT", 8101))
     print(f"Starting Flask trading terminal on http://localhost:{port}")
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
