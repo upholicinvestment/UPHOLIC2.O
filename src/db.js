@@ -163,9 +163,9 @@ async function checkAndLogPoiAlert(database, snapshotDoc) {
     const symbol = snapshotDoc.symbol;
     const nowMs = new Date(snapshotDoc.fetched_at || Date.now()).getTime();
 
-    // 10-minute cooldown per symbol for active intraday tracking
+    // 30-minute cooldown per symbol to prevent spam and ensure clean signals (~10-20/day)
     const lastAlertTime = poiAlertCooldowns.get(symbol) || 0;
-    if (nowMs - lastAlertTime < 10 * 60 * 1000) {
+    if (nowMs - lastAlertTime < 30 * 60 * 1000) {
       return;
     }
 
@@ -181,9 +181,9 @@ async function checkAndLogPoiAlert(database, snapshotDoc) {
     const prevDoc = prevSnap[0];
 
     const prevTimeMs = new Date(prevDoc.fetched_at || 0).getTime();
-    // Must be within continuous intraday trading session (between 15s and 25 mins), ignoring overnight gaps
+    // Must be within continuous intraday trading session (between 30s and 20 mins), ignoring overnight gaps
     const timeDiffMs = nowMs - prevTimeMs;
-    if (timeDiffMs > 25 * 60 * 1000 || timeDiffMs < 15 * 1000) {
+    if (timeDiffMs > 20 * 60 * 1000 || timeDiffMs < 30 * 1000) {
       return;
     }
 
@@ -227,18 +227,18 @@ async function checkAndLogPoiAlert(database, snapshotDoc) {
       }
     }
 
-    if (prevTotalOi <= 0) prevTotalOi = currentTotalOi;
+    if (prevTotalOi <= 0) return;
 
     const oiChange = currentTotalOi - prevTotalOi;
-    const oiChangePct = prevTotalOi > 0 ? (oiChange / prevTotalOi) * 100 : 0;
+    const oiChangePct = (oiChange / prevTotalOi) * 100;
 
-    // Calibrated Momentum & Institutional Filters:
-    // 1. Min 0.25% price movement between cycles (or >= 0.50% intraday)
-    // 2. Min 0.40% OI change OR absolute contracts shift >= 5,000
-    // 3. Min 2,000 contracts on dominant driver strike (or price move >= 0.5%)
-    const isPriceSignificant = Math.abs(priceChangePct) >= 0.25;
-    const isOiSignificant = Math.abs(oiChangePct) >= 0.40 || Math.abs(oiChange) >= 5000;
-    const isStrikeSignificant = Math.abs(maxStrikeDiff) >= 2000 || Math.abs(priceChangePct) >= 0.50;
+    // High-Accuracy Institutional Setup Filters:
+    // 1. Min 0.60% price momentum in 3-minute candle
+    // 2. Min 1.00% OI surge/drop AND absolute Total OI shift >= 25,000 contracts
+    // 3. Min 10,000 contracts concentrated on the dominant driver strike
+    const isPriceSignificant = Math.abs(priceChangePct) >= 0.60;
+    const isOiSignificant = Math.abs(oiChangePct) >= 1.00 && Math.abs(oiChange) >= 25000;
+    const isStrikeSignificant = Math.abs(maxStrikeDiff) >= 10000;
 
     if (!isPriceSignificant || !isOiSignificant || !isStrikeSignificant) {
       return;
